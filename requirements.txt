@@ -1,0 +1,15 @@
+supabase
+requests
+pandas
+numpy
+scikit-learn
+xgboost
+lightgbm
+python-dotenv
+pybaseball
+soccerdata
+sqlalchemy
+psycopg2-binary
+pytz
+tenacity
+joblib
