@@ -36,6 +36,20 @@ def main():
         clv = one("soccer_closing_line_value", game_id, market, pick)
         grade = one("soccer_pick_grades_v2", game_id, market, pick)
 
+        game_rows = supabase.table("games").select("*").eq("id", game_id).limit(1).execute().data
+        game = game_rows[0] if game_rows else {}
+        raw = game.get("raw_json") or {}
+        fixture = raw.get("fixture") or {}
+        kickoff_at = fixture.get("date")
+        game_date_toronto = None
+
+        if kickoff_at:
+            try:
+                kickoff_dt = datetime.fromisoformat(kickoff_at.replace("Z", "+00:00")).astimezone(TORONTO)
+                game_date_toronto = kickoff_dt.date().isoformat()
+            except Exception:
+                game_date_toronto = today
+
         out = {
             "game_id": game_id,
             "sport": "soccer",
@@ -78,6 +92,8 @@ def main():
 
             "notification_sent": False,
             "dashboard_visible": True,
+            "kickoff_at": kickoff_at,
+            "game_date_toronto": game_date_toronto or today,
             "run_date": today,
             "updated_at": datetime.now(TORONTO).isoformat(),
         }
