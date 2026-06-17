@@ -7,6 +7,7 @@ COMMANDS = [
     "python -m src.models.build_soccer_safety_engine_v3",
     "python -m src.models.build_soccer_elite_score",
     "python -m src.models.build_soccer_promotion_events",
+    "python -m src.grading.grade_soccer_picks",
 ]
 
 def run(cmd):
