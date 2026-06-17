@@ -2,6 +2,7 @@ import subprocess
 import time
 
 COMMANDS = [
+    "python -m src.ingestion.sync_soccer_live_odds_snapshots",
     "python -m src.ingestion.sync_soccer_live_lineups",
     "python -m src.models.build_soccer_safety_engine_v3",
     "python -m src.models.build_soccer_elite_score",
