@@ -47,7 +47,11 @@ def grade_pick(market, pick, home, away, home_score, away_score):
 
 
 def units_result(grade, odds_decimal):
-    odds = num(odds_decimal, 0)
+    odds = num(odds_decimal, None)
+
+    if odds is None or odds <= 1:
+        return 0
+
     if grade == "WIN":
         return round(odds - 1, 2)
     if grade == "LOSS":

@@ -10,6 +10,7 @@ COMMANDS = [
     "python -m src.grading.grade_soccer_picks",
     "python -m src.analytics.build_soccer_adaptive_weights",
     "python -m src.analytics.apply_soccer_adaptive_weights",
+    "python -m src.models.build_soccer_master_picks",
     "python -m src.analytics.build_soccer_analytics_feedback",
     "python -m src.models.build_soccer_clv_tracker",
 ]
