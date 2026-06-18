@@ -19,7 +19,9 @@ from src.grading.grade_soccer_picks import main as _grade_picks
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-MARKET_BUCKETS = ["overall", "goals", "btts", "winner"]
+MARKET_BUCKETS = ["overall", "goals", "btts", "winner", "safe_balanced", "safe_banker"]
+# safe_zone markets are tracked separately — don't roll them into the sharp-picks "overall"
+_SAFE_ZONE_MARKETS = {"safe_balanced", "safe_banker"}
 
 
 def _compute_summary(rows: list[dict]) -> list[dict]:
@@ -30,7 +32,8 @@ def _compute_summary(rows: list[dict]) -> list[dict]:
         if grade not in ("WIN", "LOSS", "VOID"):
             continue
         mkt = (r.get("market") or "").lower()
-        buckets["overall"].append(r)
+        if mkt not in _SAFE_ZONE_MARKETS:
+            buckets["overall"].append(r)
         if mkt in buckets:
             buckets[mkt].append(r)
 
