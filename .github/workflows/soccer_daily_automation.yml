@@ -23,18 +23,24 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run daily soccer engine
+      - name: Run sharp engine (canonical daily build)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          SPORTSDATA_KEY: ${{ secrets.SPORTSDATA_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
-          python -m scripts.run_full_soccer_engine
-          python -m src.ingestion.sync_soccer_live_lineups
-          python -m src.models.build_soccer_safety_engine_v3
-          python -m src.models.build_soccer_elite_score
-          python -m src.models.build_soccer_promotion_events
-          python -m scripts.check_soccer_promotion_events
-          
+          python -m scripts.run_sharp_engine
+
+      - name: Grade results and update track record
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SPORTSDATA_KEY: ${{ secrets.SPORTSDATA_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          python -m src.models.grade_soccer_results

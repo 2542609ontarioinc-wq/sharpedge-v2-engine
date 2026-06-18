@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SharpEdge Pro Soccer Picks</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(0, 255, 213, 0.20), transparent 28%),
+        radial-gradient(circle at top right, rgba(108, 75, 255, 0.24), transparent 28%),
+        linear-gradient(135deg, #06101d 0%, #07111f 45%, #130d34 100%);
+      color: #ffffff;
+    }
+
+    .page { max-width: 1500px; margin: auto; padding: 32px; }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border-radius: 32px;
+      padding: 32px;
+      margin-bottom: 28px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.13), rgba(255,255,255,0.04)),
+        rgba(6, 16, 29, 0.72);
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: 0 28px 90px rgba(0,0,0,0.38);
+    }
+
+    .heroGlow {
+      position: absolute;
+      width: 340px;
+      height: 340px;
+      right: -80px;
+      top: -120px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0,255,213,0.35), transparent 65%);
+      pointer-events: none;
+    }
+
+    .heroInner {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .brand { display: flex; align-items: center; gap: 16px; }
+
+    .brandIcon {
+      width: 66px;
+      height: 66px;
+      border-radius: 22px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #00ffd5, #5577ff);
+      color: #06101d;
+      font-size: 34px;
+      font-weight: 1000;
+      box-shadow: 0 12px 40px rgba(0,255,213,0.25);
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 46px;
+      line-height: 1;
+      letter-spacing: -1.4px;
+    }
+
+    .hero p {
+      margin: 10px 0 0;
+      color: #a9bfd8;
+      font-size: 17px;
+    }
+
+    .liveBadge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 18px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #00ffd5, #6f88ff);
+      color: #06101d;
+      font-weight: 1000;
+      font-size: 13px;
+      white-space: nowrap;
+      box-shadow: 0 12px 35px rgba(0,255,213,0.22);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #06101d;
+      animation: pulse 1.3s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.25); }
+      100% { opacity: 0.35; transform: scale(0.9); }
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 14px;
+      margin-top: 26px;
+    }
+
+    .summaryBox {
+      padding: 16px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .summaryBox span {
+      color: #9fb3c8;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .summaryBox b {
+      display: block;
+      margin-top: 7px;
+      font-size: 24px;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin: 26px 0;
+      flex-wrap: wrap;
+    }
+
+    .filterPill {
+      padding: 10px 13px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #cfe3ff;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(395px, 1fr));
+      gap: 24px;
+    }
+
+    .sectionTitle {
+      grid-column: 1 / -1;
+      font-size: 25px;
+      font-weight: 1000;
+      margin: 18px 0 0;
+      letter-spacing: -0.5px;
+    }
+
+    .sectionSub {
+      grid-column: 1 / -1;
+      margin-top: -14px;
+      color: #9fb3c8;
+      font-weight: 800;
+    }
+
+    .card {
+      position: relative;
+      overflow: hidden;
+      border-radius: 32px;
+      padding: 24px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,0.13), rgba(255,255,255,0.045)),
+        #0b1829;
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: 0 28px 80px rgba(0,0,0,0.42);
+      transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-6px);
+      border-color: rgba(0,255,213,0.42);
+      box-shadow: 0 34px 100px rgba(0,255,213,0.12), 0 28px 80px rgba(0,0,0,0.48);
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at top right, rgba(0,255,213,0.17), transparent 34%),
+        radial-gradient(circle at bottom left, rgba(91, 116, 255, 0.14), transparent 34%);
+      pointer-events: none;
+    }
+
+    .eliteBorder { border-color: rgba(0,255,170,0.36); }
+    .strongBorder { border-color: rgba(255,210,90,0.28); }
+    .watchBorder { border-color: rgba(130,160,255,0.42); }
+
+    .top {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 18px;
+    }
+
+    .matchup {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .crestStack { position: relative; width: 72px; height: 76px; }
+
+    .crest {
+      width: 54px;
+      height: 54px;
+      border-radius: 19px;
+      background: linear-gradient(135deg, #132642, #263d65);
+      border: 1px solid rgba(255,255,255,0.18);
+      display: grid;
+      place-items: center;
+      font-size: 19px;
+      font-weight: 1000;
+      box-shadow: 0 10px 26px rgba(0,0,0,0.32);
+    }
+
+    .crest.away {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, #281a45, #31507e);
+    }
+
+    .vsBubble {
+      position: absolute;
+      left: 29px;
+      top: 28px;
+      width: 23px;
+      height: 23px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #00ffd5;
+      color: #06101d;
+      font-size: 9px;
+      font-weight: 1000;
+      border: 2px solid #07111f;
+    }
+
+    .teamsText { min-width: 0; }
+
+    .teamsText h2 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.05;
+      letter-spacing: -0.4px;
+    }
+
+    .subMeta {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      color: #bcd4ee;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .tierBadge {
+      padding: 11px 13px;
+      border-radius: 16px;
+      font-size: 12px;
+      font-weight: 1000;
+      text-transform: uppercase;
+      max-width: 132px;
+      text-align: center;
+      line-height: 1.05;
+    }
+
+    .elite {
+      color: #5dffcb;
+      background: rgba(0,255,170,0.18);
+      box-shadow: inset 0 0 0 1px rgba(0,255,170,0.18);
+    }
+
+    .strong {
+      color: #ffd36e;
+      background: rgba(255,201,74,0.18);
+      box-shadow: inset 0 0 0 1px rgba(255,201,74,0.18);
+    }
+
+    .playable {
+      color: #8fc2ff;
+      background: rgba(80,155,255,0.18);
+      box-shadow: inset 0 0 0 1px rgba(80,155,255,0.18);
+    }
+
+    .watch {
+      color: #c4d2ff;
+      background: rgba(120,150,255,0.18);
+      box-shadow: inset 0 0 0 1px rgba(120,150,255,0.22);
+    }
+
+    .stars {
+      margin-bottom: 4px;
+      font-size: 12px;
+      letter-spacing: 1px;
+    }
+
+    .pickPanel {
+      position: relative;
+      margin: 20px 0;
+      padding: 22px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(0,0,0,0.34), rgba(255,255,255,0.04));
+      border: 1px solid rgba(255,255,255,0.11);
+    }
+
+    .pickHeader {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      color: #a9bfd8;
+      font-size: 12px;
+      font-weight: 1000;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 10px;
+    }
+
+    .marketIcon {
+      width: 42px;
+      height: 42px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,0.09);
+      border: 1px solid rgba(255,255,255,0.1);
+      font-size: 23px;
+    }
+
+    .pickText {
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 1000;
+      letter-spacing: -0.8px;
+      margin-bottom: 18px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 11px;
+    }
+
+    .metric {
+      padding: 13px;
+      border-radius: 17px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .metric span {
+      display: block;
+      color: #a9bfd8;
+      font-size: 11px;
+      font-weight: 1000;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+
+    .metric b { font-size: 19px; }
+
+    .scoreRow {
+      position: relative;
+      display: grid;
+      grid-template-columns: 112px 1fr;
+      gap: 18px;
+      align-items: center;
+      margin: 20px 0 16px;
+    }
+
+    .scoreRing {
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(#00ffd5 var(--score), rgba(255,255,255,0.09) 0);
+      box-shadow: 0 0 35px rgba(0,255,213,0.18);
+      position: relative;
+    }
+
+    .scoreRing::after {
+      content: "";
+      position: absolute;
+      width: 82px;
+      height: 82px;
+      border-radius: 50%;
+      background: #0b1829;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .scoreRing b {
+      position: relative;
+      z-index: 2;
+      font-size: 30px;
+      color: #00ffd5;
+    }
+
+    .barSet { display: grid; gap: 11px; }
+
+    .barLabel {
+      display: flex;
+      justify-content: space-between;
+      color: #cfe3ff;
+      font-size: 12px;
+      font-weight: 900;
+      margin-bottom: 5px;
+    }
+
+    .bar {
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .barFill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #00ffd5, #6f88ff);
+    }
+
+    .infoGrid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .infoBox {
+      padding: 13px;
+      border-radius: 17px;
+      background: rgba(255,255,255,0.065);
+      border: 1px solid rgba(255,255,255,0.09);
+      color: #d9e7f7;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .infoBox b {
+      display: block;
+      color: #ffffff;
+      margin-bottom: 4px;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .why {
+      position: relative;
+      margin-top: 14px;
+      padding: 15px;
+      border-radius: 18px;
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.09);
+      color: #d7e9ff;
+      line-height: 1.45;
+      font-size: 13px;
+    }
+
+    .chips {
+      position: relative;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 15px;
+    }
+
+    .chip {
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.085);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #c9dcf2;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .empty {
+      padding: 42px;
+      text-align: center;
+      color: #9fb3c8;
+      background: rgba(255,255,255,0.06);
+      border-radius: 24px;
+      grid-column: 1 / -1;
+    }
+
+    @media (max-width: 800px) {
+      .page { padding: 18px; }
+      .heroInner { flex-direction: column; align-items: flex-start; }
+      .hero h1 { font-size: 34px; }
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .grid { grid-template-columns: 1fr; }
+      .scoreRow { grid-template-columns: 1fr; }
+      .infoGrid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+    <section class="hero">
+      <div class="heroGlow"></div>
+      <div class="heroInner">
+        <div class="brand">
+          <div class="brandIcon">⚽</div>
+          <div>
+            <h1>SharpEdge Pro Engine</h1>
+            <p>Elite soccer picks powered by value, odds, weather, style, matchup strength and safety gates.</p>
+          </div>
+        </div>
+        <div class="liveBadge"><span class="dot"></span> PRO ENGINE LIVE</div>
+      </div>
+
+      <div class="summary">
+        <div class="summaryBox"><span>Safe Picks</span><b id="safeCount">-</b></div>
+        <div class="summaryBox"><span>Watchlist</span><b id="watchCount">-</b></div>
+        <div class="summaryBox"><span>Top Rating</span><b id="topRating">-</b></div>
+        <div class="summaryBox"><span>Engine Status</span><b>Live</b></div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="filterPill">💎 Elite Value</div>
+      <div class="filterPill">👀 Today Watchlist</div>
+      <div class="filterPill">🌦 Weather Checked</div>
+      <div class="filterPill">📈 Market Edge</div>
+      <div class="filterPill">🛡 Safety Gated</div>
+      <div class="filterPill">🧠 Tactical Matchup</div>
+    </div>
+
+    <main id="cards" class="grid"></main>
+  </div>
+
+  <script>
+    const SUPABASE_URL = "https://fcjwejraqnteginavhbp.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZjandlanJhcW50ZWdpbmF2aGJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMzM5NzUsImV4cCI6MjA5NjgwOTk3NX0.5OlmWeWerssF-IzEWCijIYEO2ovgJMKUV6vt2n8P4KA";
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    function initials(name) {
+      return (name || "").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+    }
+
+    function tierClass(tier) {
+      if (!tier) return "playable";
+      if (tier.includes("Elite")) return "elite";
+      if (tier.includes("Strong")) return "strong";
+      return "playable";
+    }
+
+    function borderClass(tier) {
+      if (!tier) return "";
+      if (tier.includes("Elite")) return "eliteBorder";
+      if (tier.includes("Strong")) return "strongBorder";
+      return "";
+    }
+
+    function stars(tier) {
+      if (!tier) return "★★★";
+      if (tier.includes("Elite")) return "★★★★★";
+      if (tier.includes("Strong")) return "★★★★";
+      return "★★★";
+    }
+
+    function marketIcon(market) {
+      if (market === "goals") return "⚽";
+      if (market === "corners") return "🚩";
+      if (market === "cards") return "🟨";
+      if (market === "player_prop") return "👤";
+      if (market === "btts") return "🥅";
+      if (market === "winner") return "🏆";
+      return "⚽";
+    }
+
+    function weatherIcon(temp, wind, rain) {
+      if (rain && Number(rain) > 0.5) return "🌧";
+      if (wind && Number(wind) >= 20) return "💨";
+      if (temp && Number(temp) >= 30) return "🔥";
+      return "☀️";
+    }
+
+    function pct(value) {
+      const n = Number(value || 0);
+      return Math.max(0, Math.min(100, n));
+    }
+
+    function card(row) {
+      const score = pct(row.final_value_rating);
+      const conf = pct(row.best_confidence);
+      const matchup = pct(row.matchup_score);
+      const weather = weatherIcon(row.temperature_c, row.wind_kph, row.precipitation_mm);
+
+      return `
+        <article class="card ${borderClass(row.final_tier)}">
+          <div class="top">
+            <div class="matchup">
+              <div class="crestStack">
+                <div class="crest">${initials(row.home_team_name)}</div>
+                <div class="crest away">${initials(row.away_team_name)}</div>
+                <div class="vsBubble">VS</div>
+              </div>
+              <div class="teamsText">
+                <h2>${row.home_team_name}<br/>vs ${row.away_team_name}</h2>
+                <div class="subMeta"><span>${marketIcon(row.market)} ${row.market}</span><span>•</span><span>${row.bookmaker || "Best Book"}</span></div>
+              </div>
+            </div>
+            <div class="tierBadge ${tierClass(row.final_tier)}"><div class="stars">${stars(row.final_tier)}</div>${row.final_tier}</div>
+          </div>
+
+          <section class="pickPanel">
+            <div class="pickHeader"><span>Recommended Pick</span><div class="marketIcon">${marketIcon(row.market)}</div></div>
+            <div class="pickText">${row.pick}</div>
+            <div class="metrics">
+              <div class="metric"><span>Value</span><b>${row.final_value_rating}</b></div>
+              <div class="metric"><span>Conf</span><b>${row.best_confidence || "-"}%</b></div>
+              <div class="metric"><span>Edge</span><b>${row.model_edge || "-"}%</b></div>
+            </div>
+          </section>
+
+          <section class="scoreRow">
+            <div class="scoreRing" style="--score:${score}%"><b>${row.final_value_rating}</b></div>
+            <div class="barSet">
+              <div><div class="barLabel"><span>Value Rating</span><span>${row.final_value_rating}</span></div><div class="bar"><div class="barFill" style="width:${score}%"></div></div></div>
+              <div><div class="barLabel"><span>Confidence</span><span>${row.best_confidence || "-"}%</span></div><div class="bar"><div class="barFill" style="width:${conf}%"></div></div></div>
+              <div><div class="barLabel"><span>Matchup Score</span><span>${row.matchup_score || "-"}</span></div><div class="bar"><div class="barFill" style="width:${matchup}%"></div></div></div>
+            </div>
+          </section>
+
+          <section class="infoGrid">
+            <div class="infoBox"><b>${weather} Weather</b>${row.temperature_c ?? "-"}°C • Wind ${row.wind_kph ?? "-"} kph</div>
+            <div class="infoBox"><b>📈 Market Edge</b>${row.model_edge ?? "-"}% edge at ${row.bookmaker || "book"}</div>
+            <div class="infoBox"><b>🧠 Style Matchup</b>${row.home_style_label || "-"} vs ${row.away_style_label || "-"}</div>
+            <div class="infoBox"><b>🛡 Safety</b>Safety ${row.safety_score ?? "-"} • Matchup ${row.matchup_score ?? "-"}</div>
+          </section>
+
+          <div class="why"><b>Why this pick:</b> ${row.explanation || "Model-approved value pick using tactical, weather, market and safety filters."}</div>
+          <div class="chips"><span class="chip">Safety Gate Passed</span><span class="chip">Weather Checked</span><span class="chip">Market Value</span><span class="chip">Tactical Matchup</span><span class="chip">Kelly / EV Ready</span></div>
+        </article>
+      `;
+    }
+
+    function watchCard(row) {
+      const conf = pct(row.best_confidence);
+
+      return `
+        <article class="card watchBorder">
+          <div class="top">
+            <div class="matchup">
+              <div class="crestStack">
+                <div class="crest">${initials(row.home_team_name)}</div>
+                <div class="crest away">${initials(row.away_team_name)}</div>
+                <div class="vsBubble">VS</div>
+              </div>
+              <div class="teamsText">
+                <h2>${row.home_team_name}<br/>vs ${row.away_team_name}</h2>
+                <div class="subMeta"><span>${marketIcon(row.market)} ${row.market}</span><span>•</span><span>TODAY WATCHLIST</span></div>
+              </div>
+            </div>
+            <div class="tierBadge watch"><div class="stars">★★★</div>WATCHLIST</div>
+          </div>
+
+          <section class="pickPanel">
+            <div class="pickHeader"><span>Model Lean</span><div class="marketIcon">${marketIcon(row.market)}</div></div>
+            <div class="pickText">${row.pick}</div>
+            <div class="metrics">
+              <div class="metric"><span>Status</span><b>Lean</b></div>
+              <div class="metric"><span>Conf</span><b>${row.best_confidence || "-"}%</b></div>
+              <div class="metric"><span>Gate</span><b>Not Safe</b></div>
+            </div>
+          </section>
+
+          <section class="scoreRow">
+            <div class="scoreRing" style="--score:${conf}%"><b>${row.best_confidence || "-"}</b></div>
+            <div class="barSet">
+              <div><div class="barLabel"><span>Model Confidence</span><span>${row.best_confidence || "-"}%</span></div><div class="bar"><div class="barFill" style="width:${conf}%"></div></div></div>
+              <div><div class="barLabel"><span>Safety Gate</span><span>Not Passed</span></div><div class="bar"><div class="barFill" style="width:35%"></div></div></div>
+              <div><div class="barLabel"><span>Market Confirmation</span><span>${row.odds_decimal ? "Partial" : "Needed"}</span></div><div class="bar"><div class="barFill" style="width:${row.odds_decimal ? 65 : 35}%"></div></div></div>
+            </div>
+          </section>
+
+          <div class="why">
+            <b>Why not safe:</b>
+            ${row.safety_note || "Model likes this angle, but it has not passed the full pro safety/value gate."}
+            <br/><br/>
+            <b>Market confirmation needed:</b>
+            ${row.market_confirmation_note || "Need stronger odds/edge confirmation before calling it a safe pick."}
+          </div>
+          <div class="chips">
+            <span class="chip">Today Only</span>
+            <span class="chip">Model Lean</span>
+            <span class="chip">${row.odds_decimal ? "Odds Found" : "Needs Odds"}</span>
+            <span class="chip">${row.model_edge ? "Edge Checked" : "Needs Edge"}</span>
+            <span class="chip">Not Final Pick</span>
+          </div>
+        </article>
+      `;
+    }
+
+    async function load() {
+      const safeRes = await client.from("soccer_api_ready_view").select("*").order("final_value_rating", { ascending: false });
+      const watchRes = await client.from("soccer_today_watchlist_view").select("*").order("best_confidence", { ascending: false });
+
+      const container = document.getElementById("cards");
+
+      if (safeRes.error) {
+        container.innerHTML = `<div class="empty">Error loading safe picks: ${safeRes.error.message}</div>`;
+        return;
+      }
+
+      if (watchRes.error) {
+        container.innerHTML = `<div class="empty">Error loading watchlist: ${watchRes.error.message}</div>`;
+        return;
+      }
+
+      const safe = safeRes.data || [];
+      const watchlist = watchRes.data || [];
+
+      document.getElementById("safeCount").textContent = safe.length;
+      document.getElementById("watchCount").textContent = watchlist.length;
+      document.getElementById("topRating").textContent = safe.length ? safe[0].final_value_rating : "-";
+
+      let html = "";
+
+      if (safe.length) {
+        html += `<div class="sectionTitle">💎 Safe Pro Picks</div>`;
+        html += safe.map(card).join("");
+      }
+
+      if (watchlist.length) {
+        html += `<div class="sectionTitle">👀 Today Watchlist</div>`;
+        html += `<div class="sectionSub">Model leans for today only. These are not final safe picks unless they pass value + safety gate.</div>`;
+        html += watchlist.map(watchCard).join("");
+      }
+
+      if (!safe.length && !watchlist.length) {
+        html = `<div class="empty">No safe picks or watchlist picks available right now.</div>`;
+      }
+
+      container.innerHTML = html;
+    }
+
+    load();
+  </script>
+</body>
+</html>

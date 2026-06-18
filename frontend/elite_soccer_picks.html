@@ -1,0 +1,1705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SharpEdge Pro Soccer Engine</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg-2: #0b1730;
+      --surface: rgba(10, 19, 38, 0.78);
+      --surface-2: rgba(13, 27, 50, 0.92);
+      --surface-3: rgba(7, 16, 31, 0.96);
+      --surface-border: rgba(120, 170, 255, 0.1);
+      --surface-border-strong: rgba(120, 170, 255, 0.22);
+      --text: #eef7ff;
+      --muted: #8ea5c5;
+      --accent: #00d4ff;
+      --accent-2: #58b9ff;
+      --elite: #12f38b;
+      --safe: #58b9ff;
+      --watch: #ffca3a;
+      --reject: #ff5c6c;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+      --radius: 18px;
+      --radius-sm: 14px;
+      --radius-lg: 24px;
+      --header-height: 96px;
+      --tab-height: 56px;
+      --transition: 240ms ease;
+      --max-width: 1440px;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at top, rgba(0, 212, 255, 0.08), transparent 18%),
+        linear-gradient(180deg, #081422 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 34px 34px;
+      pointer-events: none;
+      opacity: 0.08;
+    }
+
+    button, input, select {
+      font: inherit;
+    }
+
+    .app-shell {
+      width: min(100%, var(--max-width));
+      margin: 0 auto;
+      padding: 24px 22px 48px;
+    }
+
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+      background: linear-gradient(90deg, rgba(8, 18, 36, 0.88), rgba(10, 22, 43, 0.76));
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(16px);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow);
+    }
+
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background:
+        linear-gradient(135deg, rgba(0, 212, 255, 0.18), rgba(18, 243, 139, 0.1)),
+        rgba(8, 18, 36, 0.96);
+      border: 1px solid rgba(0, 212, 255, 0.18);
+      box-shadow: inset 0 0 20px rgba(0, 212, 255, 0.08), 0 0 22px rgba(0, 212, 255, 0.03);
+      color: var(--accent);
+      font-weight: 800;
+      font-size: 16px;
+      letter-spacing: 0.08em;
+    }
+
+    .brand-text h1 {
+      margin: 0;
+      font-size: clamp(1.2rem, 2.3vw, 1.9rem);
+      letter-spacing: 0.02em;
+    }
+
+    .brand-text p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .top-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-size: 0.88rem;
+      border: 1px solid var(--surface-border);
+      white-space: nowrap;
+    }
+
+    .live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--elite);
+      box-shadow: 0 0 0 0 rgba(18, 243, 139, 0.48);
+      animation: pulse 2s infinite;
+    }
+
+    .btn {
+      appearance: none;
+      border: 0;
+      outline: none;
+      cursor: pointer;
+      transition: transform var(--transition), box-shadow var(--transition), background var(--transition), border-color var(--transition);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      color: #03111f;
+      padding: 12px 16px;
+      border-radius: 999px;
+      font-weight: 800;
+      box-shadow: 0 0 28px rgba(0, 212, 255, 0.18);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--surface-border);
+      color: var(--text);
+      padding: 11px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .status-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.08), rgba(18, 243, 139, 0.05));
+      border: 1px solid rgba(0, 212, 255, 0.12);
+      border-radius: var(--radius-sm);
+      color: var(--muted);
+    }
+
+    .status-banner strong {
+      color: var(--text);
+      margin-right: 8px;
+    }
+
+    .timeline-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 320px;
+    }
+
+    .timeline-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      position: relative;
+      flex: 1;
+    }
+
+    .timeline-step.active {
+      color: var(--text);
+    }
+
+    .timeline-step .dot {
+      width: 10px;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .timeline-step.active .dot {
+      background: var(--accent);
+      box-shadow: 0 0 0 6px rgba(0, 212, 255, 0.08);
+    }
+
+    .timeline-step .line {
+      position: absolute;
+      top: 5px;
+      left: 50%;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06));
+      z-index: -1;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .summary-card,
+    .panel,
+    .filter-panel,
+    .chart-card,
+    .section-header,
+    .pick-card,
+    .empty-state {
+      background: linear-gradient(180deg, var(--surface-2), var(--surface-3));
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius);
+      backdrop-filter: blur(18px);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow);
+    }
+
+    .summary-card {
+      padding: 16px 14px;
+      min-height: 118px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .summary-card::after {
+      content: "";
+      position: absolute;
+      right: -18px;
+      top: -18px;
+      width: 90px;
+      height: 90px;
+      background: radial-gradient(circle, rgba(0, 212, 255, 0.08), transparent 65%);
+      pointer-events: none;
+    }
+
+    .summary-card .label {
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 10px;
+    }
+
+    .summary-card .value {
+      font-size: 1.9rem;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.03em;
+    }
+
+    .summary-card .delta {
+      margin-top: 8px;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .panel-row {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .filter-panel {
+      padding: 14px;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .filter-group label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .filter-group input,
+    .filter-group select {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      outline: none;
+    }
+
+    .filter-group input:focus,
+    .filter-group select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 58px;
+      height: 32px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      cursor: pointer;
+      border: 1px solid var(--surface-border);
+      transition: background var(--transition);
+    }
+
+    .toggle-switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--text);
+      transition: transform var(--transition);
+    }
+
+    .toggle-switch.on {
+      background: linear-gradient(90deg, var(--accent), var(--elite));
+    }
+
+    .toggle-switch.on::after {
+      transform: translateX(26px);
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1.1fr 0.9fr;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .chart-card {
+      padding: 16px;
+    }
+
+    .chart-card h3 {
+      margin: 0 0 14px;
+      font-size: 0.98rem;
+      color: var(--text);
+    }
+
+    .bar-chart {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .bar-row span:first-child {
+      width: 96px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .bar-track {
+      flex: 1;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--elite));
+      border-radius: 999px;
+      box-shadow: inset 0 0 12px rgba(0, 212, 255, 0.18);
+    }
+
+    .bar-row strong {
+      font-size: 0.84rem;
+      min-width: 42px;
+      text-align: right;
+      color: var(--text);
+    }
+
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .tabs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tab-btn {
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      border: 1px solid var(--surface-border);
+      border-radius: 999px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active {
+      color: var(--text);
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.12), rgba(18, 243, 139, 0.1));
+      border-color: rgba(0, 212, 255, 0.18);
+      box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.05);
+    }
+
+    .tab-content {
+      min-height: 380px;
+    }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .pick-card {
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+      transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .pick-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--surface-border-strong);
+    }
+
+    .pick-card.elite {
+      border-color: rgba(18, 243, 139, 0.28);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 28px rgba(18, 243, 139, 0.08);
+    }
+
+    .pick-card.safe {
+      border-color: rgba(88, 185, 255, 0.26);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 26px rgba(88, 185, 255, 0.08);
+    }
+
+    .pick-card.watch {
+      border-color: rgba(255, 202, 58, 0.24);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 26px rgba(255, 202, 58, 0.08);
+    }
+
+    .pick-card.reject {
+      border-color: rgba(255, 92, 108, 0.24);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 26px rgba(255, 92, 108, 0.08);
+    }
+
+    .pick-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .league-pill,
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .league-pill {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--muted);
+      border: 1px solid var(--surface-border);
+    }
+
+    .status-pill.elite {
+      background: rgba(18, 243, 139, 0.1);
+      color: var(--elite);
+      border: 1px solid rgba(18, 243, 139, 0.18);
+    }
+
+    .status-pill.safe {
+      background: rgba(88, 185, 255, 0.1);
+      color: var(--safe);
+      border: 1px solid rgba(88, 185, 255, 0.18);
+    }
+
+    .status-pill.watch {
+      background: rgba(255, 202, 58, 0.12);
+      color: var(--watch);
+      border: 1px solid rgba(255, 202, 58, 0.18);
+    }
+
+    .status-pill.reject {
+      background: rgba(255, 92, 108, 0.12);
+      color: var(--reject);
+      border: 1px solid rgba(255, 92, 108, 0.18);
+    }
+
+    .kickoff {
+      color: var(--muted);
+      font-size: 0.82rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .matchup {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .team-name {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .team-name strong {
+      font-size: 1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .team-name span {
+      color: var(--muted);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .vs-chip {
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 800;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .pred-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .pred-wrap .prediction {
+      font-size: 1rem;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1.3;
+    }
+
+    .score-ring {
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(var(--score-color) 0deg, rgba(255, 255, 255, 0.08) 0deg);
+      position: relative;
+      flex: none;
+      box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.03);
+    }
+
+    .score-ring::before {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, rgba(7, 18, 35, 0.98), rgba(11, 24, 47, 0.98));
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .score-ring strong {
+      position: relative;
+      z-index: 1;
+      font-size: 1rem;
+      color: var(--text);
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .metric-pill {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--surface-border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      text-align: center;
+    }
+
+    .metric-pill span {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+
+    .metric-pill strong {
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .detail-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .detail-row strong {
+      color: var(--text);
+      font-size: 0.86rem;
+    }
+
+    .gate-box {
+      border-radius: 14px;
+      padding: 12px;
+      margin-top: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--surface-border);
+    }
+
+    .gate-box.pass {
+      background: linear-gradient(90deg, rgba(18, 243, 139, 0.08), rgba(18, 243, 139, 0.04));
+      border-color: rgba(18, 243, 139, 0.18);
+    }
+
+    .gate-box.fail {
+      background: linear-gradient(90deg, rgba(255, 92, 108, 0.08), rgba(255, 92, 108, 0.04));
+      border-color: rgba(255, 92, 108, 0.18);
+    }
+
+    .gate-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-weight: 800;
+      font-size: 0.88rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .gate-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .gate-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+
+    .gate-item strong {
+      color: var(--text);
+    }
+
+    .reason-panel {
+      margin-top: 12px;
+      padding: 12px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 14px;
+      border: 1px solid var(--surface-border);
+    }
+
+    .reason-panel strong {
+      color: var(--text);
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .action-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .action-btn {
+      border-radius: 999px;
+      padding: 9px 12px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid transparent;
+    }
+
+    .action-btn.publish {
+      background: rgba(18, 243, 139, 0.12);
+      color: var(--elite);
+      border-color: rgba(18, 243, 139, 0.18);
+    }
+
+    .action-btn.wait {
+      background: rgba(255, 202, 58, 0.12);
+      color: var(--watch);
+      border-color: rgba(255, 202, 58, 0.18);
+    }
+
+    .action-btn.reject {
+      background: rgba(255, 92, 108, 0.12);
+      color: var(--reject);
+      border-color: rgba(255, 92, 108, 0.18);
+    }
+
+    .admin-panel {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+    }
+
+    .admin-panel.show {
+      display: block;
+    }
+
+    .admin-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .admin-grid div {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .admin-grid strong {
+      color: var(--text);
+    }
+
+    .empty-state {
+      padding: 18px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(18, 243, 139, 0.48); }
+      70% { box-shadow: 0 0 0 10px rgba(18, 243, 139, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(18, 243, 139, 0); }
+    }
+
+    @media (max-width: 1120px) {
+      .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .panel-row { grid-template-columns: 1fr; }
+      .chart-grid { grid-template-columns: 1fr; }
+      .cards-grid { grid-template-columns: 1fr; }
+      .filter-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 900px) {
+      .top-bar { flex-direction: column; align-items: flex-start; }
+      .top-actions { width: 100%; justify-content: flex-start; }
+      .status-banner { flex-direction: column; align-items: flex-start; }
+      .timeline-wrap { width: 100%; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail-grid { grid-template-columns: 1fr; }
+      .admin-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 640px) {
+      .app-shell { padding: 16px 12px 36px; }
+      .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .matchup { flex-direction: column; align-items: flex-start; }
+      .pred-wrap { flex-direction: column; align-items: flex-start; }
+      .score-ring { width: 68px; height: 68px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="brand-wrap">
+        <div class="brand-mark">SE</div>
+        <div class="brand-text">
+          <h1>SharpEdge Pro Soccer Engine</h1>
+          <p>Premium market intelligence for today’s soccer edges</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="top-pill"><span class="live-dot"></span><span id="todayDate">Today</span></div>
+        <div class="top-pill">Live</div>
+        <div class="top-pill" id="lastRefreshText">Last refresh —</div>
+        <button class="btn btn-primary" id="refreshBtn">Refresh</button>
+        <button class="btn btn-secondary" id="autoRefreshBtn">Auto Refresh ON</button>
+        <button class="btn btn-ghost" id="adminToggle">Admin Mode</button>
+      </div>
+    </header>
+
+    <section class="status-banner">
+      <div><strong id="liveStatusLabel">Waiting For Lineups</strong><span id="liveStatusDetail">Monitoring model inputs and market updates.</span></div>
+      <div class="timeline-wrap" id="timelineWrap"></div>
+    </section>
+
+    <section class="summary-grid">
+      <div class="summary-card"><div class="label">Elite Picks</div><div class="value" id="eliteCount">0</div><div class="delta">Top tier edges</div></div>
+      <div class="summary-card"><div class="label">Safe Picks</div><div class="value" id="safeCount">0</div><div class="delta">Low-risk plays</div></div>
+      <div class="summary-card"><div class="label">Watchlist</div><div class="value" id="watchCount">0</div><div class="delta">Needs more confirmation</div></div>
+      <div class="summary-card"><div class="label">Rejected</div><div class="value" id="rejectCount">0</div><div class="delta">Filtered out</div></div>
+      <div class="summary-card"><div class="label">Avg Elite</div><div class="value" id="avgElite">0</div><div class="delta">Adjusted score</div></div>
+      <div class="summary-card"><div class="label">Avg Conf.</div><div class="value" id="avgConf">0%</div><div class="delta">Model confidence</div></div>
+      <div class="summary-card"><div class="label">Highest Edge</div><div class="value" id="highestEdge">0%</div><div class="delta">Best CLV / EV</div></div>
+    </section>
+
+    <section class="panel-row">
+      <div class="filter-panel">
+        <div class="filter-grid">
+          <div class="filter-group">
+            <label for="leagueFilter">League</label>
+            <select id="leagueFilter"><option value="all">All Leagues</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="marketFilter">Market</label>
+            <select id="marketFilter"><option value="all">All Markets</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="bookmakerFilter">Bookmaker</label>
+            <select id="bookmakerFilter"><option value="all">All Bookmakers</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="sortFilter">Sort</label>
+            <select id="sortFilter">
+              <option value="elite">Elite Score</option>
+              <option value="confidence">Confidence</option>
+              <option value="kickoff">Kickoff</option>
+              <option value="value">Value</option>
+              <option value="clv">CLV</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="confidenceFilter">Confidence</label>
+            <select id="confidenceFilter">
+              <option value="all">Any</option>
+              <option value="80+">80%+</option>
+              <option value="70+">70%+</option>
+              <option value="60+">60%+</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="searchFilter">Search Teams</label>
+            <input id="searchFilter" type="search" placeholder="Search teams or pick" />
+          </div>
+        </div>
+        <div class="toggle-row" style="margin-top: 12px;">
+          <label class="filter-group" style="flex-direction: row; align-items: center; gap: 8px;">
+            <input type="checkbox" id="onlyElite" />
+            <span>Only Elite</span>
+          </label>
+          <label class="filter-group" style="flex-direction: row; align-items: center; gap: 8px;">
+            <input type="checkbox" id="onlySafe" />
+            <span>Only Safe</span>
+          </label>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Market Breakdown</h3>
+        <div class="bar-chart" id="marketBreakdown"></div>
+      </div>
+    </section>
+
+    <section class="chart-grid">
+      <div class="chart-card">
+        <h3>Elite Score Distribution</h3>
+        <div class="bar-chart" id="eliteDistribution"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Confidence Distribution</h3>
+        <div class="bar-chart" id="confidenceDistribution"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Top Value</h3>
+        <div class="bar-chart" id="valueDistribution"></div>
+      </div>
+    </section>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="elite">Elite</button>
+      <button class="tab-btn" data-tab="safe">Safe</button>
+      <button class="tab-btn" data-tab="watch">Watchlist</button>
+      <button class="tab-btn" data-tab="reject">Rejected</button>
+      <button class="tab-btn" data-tab="completed">Completed</button>
+      <button class="tab-btn" data-tab="history">History</button>
+    </div>
+
+    <section class="tab-content" id="tabContent"></section>
+  </div>
+
+  <script>
+    const SUPABASE_URL = "https://fcjwejraqnteginavhbp.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZjandlanJhcW50ZWdpbmF2aGJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMzM5NzUsImV4cCI6MjA5NjgwOTk3NX0.5OlmWeWerssF-IzEWCijIYEO2ovgJMKUV6vt2n8P4KA";
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let allRows = [];
+    let filteredRows = [];
+    let autoRefresh = true;
+    let currentTab = "elite";
+    let refreshTimer = null;
+    let adminMode = false;
+
+    const statusOrder = [
+      { key: "WATCHLIST", label: "WATCHLIST", detail: "Waiting for lineup confirmation." },
+      { key: "PUBLISH_SAFE", label: "SAFE", detail: "Odds and model conditions are stable." },
+      { key: "PUBLISH_ELITE", label: "ELITE", detail: "Premium edge with best market value." }
+    ];
+
+    function toNum(v, fallback = 0) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function fmtNum(v, digits = 2) {
+      if (v === null || v === undefined || v === "") return "-";
+      return toNum(v).toFixed(digits);
+    }
+
+    function fmtPct(v, digits = 1) {
+      if (v === null || v === undefined || v === "") return "-";
+      return `${toNum(v).toFixed(digits)}%`;
+    }
+
+    function fmtOdds(v) {
+      if (v === null || v === undefined || v === "") return "-";
+      const n = toNum(v, NaN);
+      return Number.isFinite(n) ? n.toFixed(2) : "-";
+    }
+
+    function isArrayLike(v) {
+      return Array.isArray(v) || (typeof v === "string" && v.trim().startsWith("["));
+    }
+
+    function parseList(v) {
+      if (Array.isArray(v)) return v;
+      if (!v) return [];
+      if (typeof v === "string") {
+        const trimmed = v.trim();
+        if (!trimmed) return [];
+        if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed;
+            if (parsed && typeof parsed === "object") return [parsed];
+          } catch (e) {}
+        }
+        return trimmed.split(",").map(item => item.trim()).filter(Boolean);
+      }
+      return [];
+    }
+
+    function get(row, keys) {
+      for (const key of keys) {
+        if (row[key] !== null && row[key] !== undefined && row[key] !== "") return row[key];
+      }
+      return null;
+    }
+
+    function getStatus(row) {
+      return get(row, [
+        "adaptive_publish_status",
+        "publish_status",
+        "status",
+        "category",
+        "pick_status"
+      ]) || "REJECT";
+    }
+
+    function getLeague(row) {
+      return get(row, [
+        "league_name",
+        "league",
+        "competition_name",
+        "competition"
+      ]) || "Unknown League";
+    }
+
+    function getMarket(row) {
+      return get(row, [
+        "market",
+        "market_type",
+        "prediction_market",
+        "pick_market"
+      ]) || "Unknown Market";
+    }
+
+    function getBookmaker(row) {
+      return get(row, [
+        "bookmaker",
+        "best_bookmaker",
+        "odds_bookmaker"
+      ]) || "-";
+    }
+
+    function getOdds(row) {
+      return get(row, [
+        "odds_decimal",
+        "odds",
+        "best_odds",
+        "decimal_odds"
+      ]);
+    }
+
+    function getConfidence(row) {
+      return get(row, [
+        "adjusted_confidence",
+        "confidence",
+        "best_confidence",
+        "model_confidence"
+      ]);
+    }
+
+    function getElite(row) {
+      return get(row, [
+        "adjusted_elite_score",
+        "elite_score",
+        "adjusted_score",
+        "elite"
+      ]);
+    }
+
+    function getClv(row) {
+      return get(row, [
+        "clv_percent",
+        "clv",
+        "calibrated_value"
+      ]);
+    }
+
+    function getEv(row) {
+      return get(row, [
+        "expected_value",
+        "expected_value_percent",
+        "ev",
+        "edge"
+      ]);
+    }
+
+    function getKelly(row) {
+      return get(row, [
+        "kelly_percent",
+        "kelly",
+        "kelly_fraction"
+      ]);
+    }
+
+    function getSafety(row) {
+      return get(row, [
+        "safety_score",
+        "safety",
+        "risk_score"
+      ]);
+    }
+
+    function getAdaptive(row) {
+      return get(row, [
+        "adaptive_score",
+        "adaptive_rating",
+        "adaptive_value"
+      ]);
+    }
+
+    function getModelVersion(row) {
+      return get(row, [
+        "model_version",
+        "version",
+        "engine_version"
+      ]) || "v1";
+    }
+
+    function getReason(row) {
+      return get(row, [
+        "reason",
+        "engine_reason",
+        "adaptive_reason",
+        "rationale",
+        "model_reason",
+        "notes",
+        "summary"
+      ]) || "The engine identified a favorable edge profile for this selection based on the latest market and model signals.";
+    }
+
+    function getPassed(row) {
+      const v = get(row, ["passed_gates", "passed", "accepted_gates"]);
+      return parseList(v).map(item => typeof item === "string" ? { name: item, note: "" } : item);
+    }
+
+    function getFailed(row) {
+      const v = get(row, ["failed_gates", "failed", "rejected_gates"]);
+      return parseList(v).map(item => typeof item === "string" ? { name: item, note: "" } : item);
+    }
+
+    function normalizeStatus(status) {
+      const s = String(status || "").toUpperCase();
+      if (s.includes("ELITE") || s === "PUBLISH_ELITE") return "elite";
+      if (s.includes("SAFE") || s === "PUBLISH_SAFE") return "safe";
+      if (s.includes("WATCH") || s === "WATCHLIST") return "watch";
+      if (s.includes("REJECT") || s === "REJECT") return "reject";
+      return "reject";
+    }
+
+    function statusBadgeClass(status) {
+      const bucket = normalizeStatus(status);
+      return bucket;
+    }
+
+    function statusLabel(status) {
+      const bucket = normalizeStatus(status);
+      if (bucket === "elite") return "Elite";
+      if (bucket === "safe") return "Safe";
+      if (bucket === "watch") return "Watchlist";
+      return "Reject";
+    }
+
+    function formatDate(dateString) {
+      if (!dateString) return "";
+      const date = new Date(dateString);
+      if (Number.isNaN(date.getTime())) return dateString;
+      return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    }
+
+    function shortTime(dateString) {
+      if (!dateString) return "";
+      const date = new Date(dateString);
+      if (Number.isNaN(date.getTime())) return dateString;
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function formatKickoff(row) {
+      return shortTime(get(row, ["kickoff_time", "kickoff", "scheduled_at", "start_time"])) || "TBD";
+    }
+
+    function safeText(v) {
+      return v === null || v === undefined || v === "" ? "-" : v;
+    }
+
+    function clamp(n, min, max) {
+      return Math.min(max, Math.max(min, n));
+    }
+
+    function ringPercent(v, max = 100) {
+      const n = clamp(toNum(v, 0), 0, max);
+      return Math.max(0, Math.min(100, (n / max) * 100));
+    }
+
+    function getScoreColor(bucket) {
+      if (bucket === "elite") return "var(--elite)";
+      if (bucket === "safe") return "var(--safe)";
+      if (bucket === "watch") return "var(--watch)";
+      return "var(--reject)";
+    }
+
+    function updateLiveStatus(rows) {
+      const watchRows = rows.filter(row => normalizeStatus(getStatus(row)) === "watch");
+      const safeRows = rows.filter(row => normalizeStatus(getStatus(row)) === "safe");
+      const eliteRows = rows.filter(row => normalizeStatus(getStatus(row)) === "elite");
+
+      let status = "Waiting For Lineups";
+      let detail = "Monitoring model inputs and market updates.";
+      if (watchRows.length) {
+        status = "Promotion Pending";
+        detail = `${watchRows.length} watchlist selections are circling a potential upgrade.`;
+      }
+      if (safeRows.length && eliteRows.length) {
+        status = "Recently Promoted";
+        detail = `${eliteRows.length} elite plays are now leading the board.`;
+      }
+      if (!watchRows.length && !safeRows.length && !eliteRows.length) {
+        status = "Odds Updated";
+        detail = "The market feed has refreshed and the board is recalibrating.";
+      }
+      document.getElementById("liveStatusLabel").textContent = status;
+      document.getElementById("liveStatusDetail").textContent = detail;
+    }
+
+    function renderTimeline(rows) {
+      const timeline = document.getElementById("timelineWrap");
+      const stepCount = 3;
+      const total = Math.max(1, rows.length);
+      const activeIndex = Math.min(stepCount - 1, Math.floor((rows.filter(r => normalizeStatus(getStatus(r)) === "elite").length / Math.max(1, total)) * 3));
+      const stages = [
+        { label: "WATCHLIST", active: activeIndex >= 0 },
+        { label: "SAFE", active: activeIndex >= 1 },
+        { label: "ELITE", active: activeIndex >= 2 }
+      ];
+      timeline.innerHTML = stages.map((stage, index) => `
+        <div class="timeline-step ${stage.active ? "active" : ""}">
+          <div class="line"></div>
+          <div class="dot"></div>
+          <span>${stage.label}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderSummary(rows) {
+      const counts = {
+        elite: rows.filter(r => normalizeStatus(getStatus(r)) === "elite").length,
+        safe: rows.filter(r => normalizeStatus(getStatus(r)) === "safe").length,
+        watch: rows.filter(r => normalizeStatus(getStatus(r)) === "watch").length,
+        reject: rows.filter(r => normalizeStatus(getStatus(r)) === "reject").length
+      };
+
+      const eliteScores = rows.map(r => toNum(getElite(r), 0));
+      const confidences = rows.map(r => toNum(getConfidence(r), 0));
+      const values = rows.map(r => Math.max(toNum(getClv(r), 0), toNum(getEv(r), 0)));
+
+      document.getElementById("eliteCount").textContent = counts.elite;
+      document.getElementById("safeCount").textContent = counts.safe;
+      document.getElementById("watchCount").textContent = counts.watch;
+      document.getElementById("rejectCount").textContent = counts.reject;
+      document.getElementById("avgElite").textContent = eliteScores.length ? (eliteScores.reduce((a, b) => a + b, 0) / eliteScores.length).toFixed(1) : "0.0";
+      document.getElementById("avgConf").textContent = confidences.length ? `${(confidences.reduce((a, b) => a + b, 0) / confidences.length).toFixed(1)}%` : "0%";
+      document.getElementById("highestEdge").textContent = values.length ? `${Math.max(...values).toFixed(1)}%` : "0%";
+    }
+
+    function setSelectOptions(selectId, values) {
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      const uniqueValues = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const current = select.value;
+      select.innerHTML = `<option value="all">All</option>`;
+      uniqueValues.forEach(val => {
+        const option = document.createElement("option");
+        option.value = val;
+        option.textContent = val;
+        select.appendChild(option);
+      });
+      if (current && current !== "all" && uniqueValues.includes(current)) {
+        select.value = current;
+      }
+    }
+
+    function applyFilters() {
+      const league = document.getElementById("leagueFilter").value;
+      const market = document.getElementById("marketFilter").value;
+      const bookmaker = document.getElementById("bookmakerFilter").value;
+      const confidence = document.getElementById("confidenceFilter").value;
+      const search = document.getElementById("searchFilter").value.trim().toLowerCase();
+      const onlyElite = document.getElementById("onlyElite").checked;
+      const onlySafe = document.getElementById("onlySafe").checked;
+      const sort = document.getElementById("sortFilter").value;
+
+      filteredRows = allRows.filter(row => {
+        const rowLeague = getLeague(row);
+        const rowMarket = getMarket(row);
+        const rowBookmaker = getBookmaker(row);
+        const rowConf = toNum(getConfidence(row), 0);
+        const rowElite = toNum(getElite(row), 0);
+        const rowStatus = normalizeStatus(getStatus(row));
+        const label = `${rowLeague} ${rowMarket} ${rowBookmaker} ${get(row, ["home_team_name", "home_team"]) || ""} ${get(row, ["away_team_name", "away_team"]) || ""} ${get(row, ["pick", "prediction"]) || ""}`.toLowerCase();
+
+        if (league !== "all" && rowLeague !== league) return false;
+        if (market !== "all" && rowMarket !== market) return false;
+        if (bookmaker !== "all" && rowBookmaker !== bookmaker) return false;
+        if (confidence === "80+" && rowConf < 80) return false;
+        if (confidence === "70+" && rowConf < 70) return false;
+        if (confidence === "60+" && rowConf < 60) return false;
+        if (onlyElite && rowStatus !== "elite") return false;
+        if (onlySafe && rowStatus !== "safe") return false;
+        if (search && !label.includes(search)) return false;
+
+        return true;
+      });
+
+      filteredRows.sort((a, b) => {
+        const aStatus = normalizeStatus(getStatus(a));
+        const bStatus = normalizeStatus(getStatus(b));
+        const aElite = toNum(getElite(a), 0);
+        const bElite = toNum(getElite(b), 0);
+        const aConf = toNum(getConfidence(a), 0);
+        const bConf = toNum(getConfidence(b), 0);
+        const aClv = toNum(getClv(a), 0);
+        const bClv = toNum(getClv(b), 0);
+        const aValue = Math.max(aClv, toNum(getEv(a), 0));
+        const bValue = Math.max(bClv, toNum(getEv(b), 0));
+        const aKickoff = new Date(get(a, ["kickoff_time", "kickoff", "scheduled_at", "start_time"]) || 0).getTime();
+        const bKickoff = new Date(get(b, ["kickoff_time", "kickoff", "scheduled_at", "start_time"]) || 0).getTime();
+
+        if (sort === "elite") return bElite - aElite || bConf - aConf;
+        if (sort === "confidence") return bConf - aConf || bElite - aElite;
+        if (sort === "kickoff") return aKickoff - bKickoff;
+        if (sort === "value") return bValue - aValue || bElite - aElite;
+        if (sort === "clv") return bClv - aClv || bElite - aElite;
+        return bElite - aElite;
+      });
+
+      renderAll();
+    }
+
+    function bucketName(value, step) {
+      const n = Math.max(0, Math.min(100, toNum(value, 0)));
+      const bucket = Math.floor(n / step) * step;
+      return `${bucket}-${bucket + step - 1}`;
+    }
+
+    function renderDistribution(targetId, values, labelFn, colorFn) {
+      const container = document.getElementById(targetId);
+      if (!container) return;
+      const counts = {};
+      values.forEach(v => {
+        const key = labelFn(v);
+        counts[key] = (counts[key] || 0) + 1;
+      });
+      const items = Object.entries(counts).slice(0, 6);
+      container.innerHTML = items.length
+        ? items.map(([key, count]) => `
+          <div class="bar-row">
+            <span>${key}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, (count / Math.max(1, values.length)) * 100)}%; background:${colorFn(key)}"></div></div>
+            <strong>${count}</strong>
+          </div>
+        `).join("")
+        : '<div class="empty-state">No data available</div>';
+    }
+
+    function renderCharts(rows) {
+      const eliteValues = rows.map(r => toNum(getElite(r), 0));
+      const confValues = rows.map(r => toNum(getConfidence(r), 0));
+      const marketValues = rows.map(r => getMarket(r));
+      const valueValues = rows.map(r => Math.max(toNum(getClv(r), 0), toNum(getEv(r), 0)));
+
+      renderDistribution(
+        "eliteDistribution",
+        eliteValues,
+        v => bucketName(v, 10),
+        () => "linear-gradient(90deg, var(--accent), var(--elite))"
+      );
+      renderDistribution(
+        "confidenceDistribution",
+        confValues,
+        v => `${Math.floor(v / 10) * 10}+`,
+        () => "linear-gradient(90deg, var(--safe), var(--accent))"
+      );
+      renderDistribution(
+        "valueDistribution",
+        valueValues,
+        v => `${Math.max(0, Math.floor(v))}%`,
+        () => "linear-gradient(90deg, var(--watch), var(--reject))"
+      );
+
+      const marketCounts = {};
+      marketValues.forEach(v => { marketCounts[v] = (marketCounts[v] || 0) + 1; });
+      const marketEntries = Object.entries(marketCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
+      const marketContainer = document.getElementById("marketBreakdown");
+      marketContainer.innerHTML = marketEntries.length
+        ? marketEntries.map(([name, count]) => `
+          <div class="bar-row">
+            <span>${name}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, (count / Math.max(1, marketValues.length)) * 100)}%"></div></div>
+            <strong>${count}</strong>
+          </div>
+        `).join("")
+        : '<div class="empty-state">No markets available</div>';
+    }
+
+    function renderCard(row) {
+      const status = getStatus(row);
+      const bucket = normalizeStatus(status);
+      const league = getLeague(row);
+      const market = getMarket(row);
+      const teamHome = get(row, ["home_team_name", "home_team"]) || "Home";
+      const teamAway = get(row, ["away_team_name", "away_team"]) || "Away";
+      const pick = get(row, ["pick", "prediction", "selection"]) || "Pick";
+      const kickoff = formatKickoff(row);
+      const odds = getOdds(row);
+      const confidence = getConfidence(row);
+      const elite = getElite(row);
+      const clv = getClv(row);
+      const ev = getEv(row);
+      const kelly = getKelly(row);
+      const safety = getSafety(row);
+      const adaptive = getAdaptive(row);
+      const version = getModelVersion(row);
+      const passed = getPassed(row);
+      const failed = getFailed(row);
+      const reason = getReason(row);
+
+      const score = Math.max(0, Math.min(100, toNum(elite, 0)));
+      const conf = Math.max(0, Math.min(100, toNum(confidence, 0)));
+
+      return `
+        <article class="pick-card ${bucket}">
+          <div class="pick-top">
+            <span class="league-pill">${league}</span>
+            <span class="status-pill ${bucket}">${statusLabel(status)}</span>
+          </div>
+          <div class="kickoff">⏱ ${kickoff}</div>
+          <div class="matchup">
+            <div class="team-name">
+              <strong>${teamHome}</strong>
+              <span>Home</span>
+            </div>
+            <span class="vs-chip">VS</span>
+            <div class="team-name" style="text-align:right;">
+              <strong>${teamAway}</strong>
+              <span>Away</span>
+            </div>
+          </div>
+          <div class="pred-wrap">
+            <div>
+              <div class="prediction">${pick} • ${market}</div>
+            </div>
+            <div class="score-ring" style="--score-color:${getScoreColor(bucket)}; background:conic-gradient(${getScoreColor(bucket)} ${score * 3.6}deg, rgba(255,255,255,0.08) 0deg);">
+              <strong>${fmtNum(elite, 0)}</strong>
+            </div>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-pill">
+              <span>Confidence</span>
+              <strong>${fmtPct(confidence)}</strong>
+            </div>
+            <div class="metric-pill">
+              <span>Odds</span>
+              <strong>${fmtOdds(odds)}</strong>
+            </div>
+            <div class="metric-pill">
+              <span>Bookmaker</span>
+              <strong>${safeText(getBookmaker(row))}</strong>
+            </div>
+            <div class="metric-pill">
+              <span>Kelly</span>
+              <strong>${fmtPct(kelly)}</strong>
+            </div>
+          </div>
+          <div class="detail-grid">
+            <div class="detail-row"><span>Expected Value</span><strong>${fmtPct(ev)}</strong></div>
+            <div class="detail-row"><span>CLV</span><strong>${fmtPct(clv)}</strong></div>
+            <div class="detail-row"><span>Safety Score</span><strong>${fmtNum(safety, 1)}</strong></div>
+            <div class="detail-row"><span>Adaptive Score</span><strong>${fmtNum(adaptive, 1)}</strong></div>
+          </div>
+          <div class="detail-grid" style="margin-bottom:0;">
+            <div class="detail-row"><span>Model Version</span><strong>${safeText(version)}</strong></div>
+            <div class="detail-row"><span>Kickoff</span><strong>${kickoff}</strong></div>
+          </div>
+          <div class="gate-box pass">
+            <div class="gate-title">Passed Gates <span>${passed.length}</span></div>
+            <div class="gate-list">
+              ${passed.length ? passed.map(item => `<div class="gate-item">✓ <div><strong>${safeText(item.name || item.gate || item.label)}</strong>${item.note ? `<br>${safeText(item.note)}` : ""}</div></div>`).join("") : `<div class="gate-item">• No passed gates listed.</div>`}
+            </div>
+          </div>
+          <div class="gate-box fail">
+            <div class="gate-title">Failed Gates <span>${failed.length}</span></div>
+            <div class="gate-list">
+              ${failed.length ? failed.map(item => `<div class="gate-item">✕ <div><strong>${safeText(item.name || item.gate || item.label)}</strong>${item.note ? `<br>${safeText(item.note)}` : ""}</div></div>`).join("") : `<div class="gate-item">• No failed gates listed.</div>`}
+            </div>
+          </div>
+          <div class="reason-panel">
+            <strong>Engine Reason</strong>
+            ${safeText(reason)}
+          </div>
+          <div class="action-row">
+            <button class="action-btn publish">Publish</button>
+            <button class="action-btn wait">Wait</button>
+            <button class="action-btn reject">Reject</button>
+          </div>
+          <div class="admin-panel ${adminMode ? 'show' : ''}">
+            <div class="admin-grid">
+              <div><span>Raw Elite</span><strong>${fmtNum(get(row, ["raw_elite_score", "original_elite_score", "base_elite_score"]))}</strong></div>
+              <div><span>Raw Confidence</span><strong>${fmtPct(get(row, ["raw_confidence", "original_confidence", "base_confidence"]))}</strong></div>
+              <div><span>Adaptive Notes</span><strong>${safeText(get(row, ["adaptive_notes", "adaptive_comment", "adaptive_summary"]))}</strong></div>
+              <div><span>Internal Notes</span><strong>${safeText(get(row, ["internal_notes", "notes_internal", "audit_notes"]))}</strong></div>
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderSection(title, rows) {
+      if (!rows.length) {
+        return `<div class="empty-state">${title} is empty right now.</div>`;
+      }
+      return `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;">
+          <h2 style="margin:0; font-size:1.1rem;">${title}</h2>
+          <span style="color:var(--muted); font-size:0.82rem;">${rows.length} selections</span>
+        </div>
+        <div class="cards-grid">${rows.map(renderCard).join("")}</div>
+      `;
+    }
+
+    function getRowsForTab(tab) {
+      if (tab === "completed") {
+        return filteredRows.filter(row => {
+          const completed = get(row, ["is_completed", "completed", "result_status", "game_status"]);
+          const status = String(getStatus(row) || "").toUpperCase();
+          return completed === true || completed === 1 || ["COMPLETED", "FINAL", "FINISHED", "RESULT"].includes(status) || get(row, ["result", "outcome"]) !== null;
+        });
+      }
+      if (tab === "history") {
+        return filteredRows.filter(row => {
+          const status = String(getStatus(row) || "").toUpperCase();
+          return ["COMPLETED", "FINAL", "FINISHED", "HISTORY", "RESULT"].includes(status) || get(row, ["result", "outcome"]) !== null;
+        });
+      }
+      return filteredRows.filter(row => {
+        const bucket = normalizeStatus(getStatus(row));
+        return bucket === tab || (tab === "reject" && bucket === "reject");
+      });
+    }
+
+    function renderAll() {
+      renderSummary(filteredRows);
+      renderCharts(filteredRows);
+      updateLiveStatus(filteredRows);
+      renderTimeline(filteredRows);
+
+      const tabRows = getRowsForTab(currentTab);
+      document.getElementById("tabContent").innerHTML = renderSection(
+        `${statusLabel(getStatus(tabRows[0] || {})) || currentTab.charAt(0).toUpperCase() + currentTab.slice(1)} Picks`,
+        tabRows
+      );
+    }
+
+    async function loadPicks() {
+      document.getElementById("tabContent").innerHTML = '<div class="empty-state">Loading today’s picks…</div>';
+      const { data, error } = await client
+        .from("soccer_master_today_view")
+        .select("*")
+        .order("adjusted_elite_score", { ascending: false });
+
+      if (error) {
+        document.getElementById("tabContent").innerHTML = `<div class="empty-state">Unable to load data: ${error.message}</div>`;
+        return;
+      }
+
+      allRows = data || [];
+      document.getElementById("todayDate").textContent = new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+      document.getElementById("lastRefreshText").textContent = `Last refresh ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      setSelectOptions("leagueFilter", allRows.map(getLeague));
+      setSelectOptions("marketFilter", allRows.map(getMarket));
+      setSelectOptions("bookmakerFilter", allRows.map(getBookmaker));
+      applyFilters();
+    }
+
+    function startAutoRefresh() {
+      clearInterval(refreshTimer);
+      if (!autoRefresh) return;
+      refreshTimer = setInterval(() => {
+        loadPicks();
+      }, 60000);
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      loadPicks();
+    });
+
+    document.getElementById("autoRefreshBtn").addEventListener("click", () => {
+      autoRefresh = !autoRefresh;
+      document.getElementById("autoRefreshBtn").textContent = `Auto Refresh ${autoRefresh ? "ON" : "OFF"}`;
+      startAutoRefresh();
+    });
+
+    document.getElementById("adminToggle").addEventListener("click", () => {
+      adminMode = !adminMode;
+      document.getElementById("adminToggle").textContent = adminMode ? "Admin Mode ON" : "Admin Mode";
+      document.querySelectorAll(".admin-panel").forEach(el => el.classList.toggle("show", adminMode));
+    });
+
+    document.querySelectorAll(".tab-btn").forEach(button => {
+      button.addEventListener("click", () => {
+        currentTab = button.dataset.tab;
+        document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn === button));
+        renderAll();
+      });
+    });
+
+    ["leagueFilter", "marketFilter", "bookmakerFilter", "sortFilter", "confidenceFilter", "searchFilter", "onlyElite", "onlySafe"].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener(el.tagName === "INPUT" ? "input" : "change", applyFilters);
+    });
+
+    loadPicks();
+    startAutoRefresh();
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+home_team_name,away_team_name,best_pick,market,confidence,ensemble_score,value_rating,bookmaker,odds_decimal,odds_american,market_implied_probability,model_edge
+Germany,Curaçao,Germany,winner,74.0,67.43,Strong,,,,,
+Austria,Jordan,Austria,winner,69.5,64.48,Playable,,,,,
+Ivory Coast,Ecuador,Over 2.5,goals,75.68,62.2,Playable,,,,,
+Belgium,Egypt,Over 2.5,goals,75.96,61.95,Playable,BetMGM,2.0,100,50.0,25.96
+Portugal,Congo DR,Over 2.5,goals,71.06,60.48,Playable,,,,,
+Argentina,Algeria,Over 2.5,goals,82.0,59.38,Playable,,,,,
+Czechia,South Africa,BTTS No,btts,62.0,59.04,Playable,,,,,
+Netherlands,Japan,Over 2.5,goals,70.92,57.88,Playable,,,,,
+France,Senegal,BTTS Yes,btts,68.0,57.74,Playable,,,,,
+Ghana,Panama,BTTS No,btts,62.0,56.21,Playable,,,,,
+Spain,Cape Verde Islands,Over 2.5,goals,68.26,55.93,Playable,BetMGM,1.65,-153,60.61,7.65
+Iraq,Norway,Over 2.5,goals,61.54,55.62,Playable,,,,,
+Australia,Türkiye,Over 2.5,goals,71.06,55.42,Playable,,,,,
+Vancouver FC,Pacific FC,BTTS No,btts,62.0,55.21,Playable,,,,,
+Saudi Arabia,Uruguay,BTTS No,btts,62.0,54.93,Pass,,,,,
+Iran,New Zealand,Over 2.5,goals,63.5,54.55,Pass,BetMGM,2.45,145,40.82,22.68
+Canada,Qatar,BTTS Yes,btts,60.0,54.02,Pass,,,,,
+Haiti,Scotland,Over 2.5,goals,63.64,53.69,Pass,,,,,
+Sweden,Tunisia,BTTS No,btts,62.0,51.52,Pass,,,,,
+Switzerland,Bosnia & Herzegovina,BTTS Yes,btts,60.0,50.86,Pass,,,,,
+Uzbekistan,Colombia,BTTS Yes,btts,60.0,50.13,Pass,,,,,
+England,Croatia,Over 2.5,goals,60.84,50.04,Pass,,,,,
