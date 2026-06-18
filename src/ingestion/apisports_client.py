@@ -91,10 +91,12 @@ class APISportsClient:
             params={"date": date_str}
         )
 
-    def get_baseball_games_by_league_date(self, date_str, league_id=1):
+    def get_baseball_games_by_league_date(self, date_str, league_id=1, season=None):
+        if season is None:
+            season = int(date_str[:4])
         return self._get(
             f"{self.baseball_base_url}/games",
-            params={"date": date_str, "league": league_id}
+            params={"date": date_str, "league": league_id, "season": season}
         )
 
     def get_baseball_teams(self, league_id=1, season=None):
