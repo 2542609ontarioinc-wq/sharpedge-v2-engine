@@ -1,3 +1,4 @@
+from datetime import datetime
 from supabase import create_client
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
@@ -61,14 +62,41 @@ def novig_implied(game_id, market, pick):
         by_book = {}
         for o in legs:
             by_book.setdefault(o.get("bookmaker"), []).append(o)
-        # need all 3 (home/draw/away) for a true no-vig
+        pick_lower = pick.lower().strip()
         for book, ol in by_book.items():
-            if len(ol) >= 3:
-                total = sum(1.0 / num(o["odds_decimal"]) for o in ol if num(o["odds_decimal"]) > 0)
-                for o in ol:
-                    if (o.get("selection") or "").lower() == pick.lower():
-                        mine = 1.0 / num(o["odds_decimal"])
-                        return round((mine / total) * 100, 2)
+            # Rows within one bookmaker snapshot are inserted within milliseconds
+            # of each other, so exact captured_at differs. Bucket by 10-second
+            # windows to group them, then iterate newest→oldest.
+            def _bucket(ts_str):
+                try:
+                    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    return dt.replace(second=(dt.second // 10) * 10, microsecond=0).isoformat()
+                except Exception:
+                    return ts_str or ""
+
+            by_bucket = {}
+            for o in ol:
+                bkt = _bucket(o.get("captured_at") or "")
+                by_bucket.setdefault(bkt, []).append(o)
+
+            for bkt in sorted(by_bucket):  # oldest first = pre-match snapshot
+                snap = by_bucket[bkt]
+                by_sel = {}
+                for o in snap:
+                    sel = (o.get("selection") or "").strip()
+                    odds_val = num(o.get("odds_decimal"))
+                    if sel and odds_val > 1.0:
+                        by_sel[sel] = odds_val
+                if len(by_sel) != 3:
+                    continue
+                if "draw" not in {s.lower() for s in by_sel}:
+                    continue
+                total = sum(1.0 / v for v in by_sel.values())
+                if total <= 0:
+                    continue
+                for sel, odds_val in by_sel.items():
+                    if sel.lower() == pick_lower:
+                        return round((1.0 / odds_val / total) * 100, 2)
         return None
 
     return None
