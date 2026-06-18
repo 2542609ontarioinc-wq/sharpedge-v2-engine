@@ -1,0 +1,46 @@
+name: SharpEdge MLB Daily Automation
+
+on:
+  schedule:
+    # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — 2 hours after the soccer engine
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-mlb-engine:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run MLB engine (ingest → pitchers → team strength → model → picks → backtest)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SPORTSDATA_KEY: ${{ secrets.SPORTSDATA_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          python -m scripts.run_mlb_engine
+
+      - name: Grade MLB picks and update track record
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SPORTSDATA_KEY: ${{ secrets.SPORTSDATA_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          python -m src.models.grade_mlb_results
