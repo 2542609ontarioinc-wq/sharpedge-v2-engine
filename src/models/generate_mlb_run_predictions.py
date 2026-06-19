@@ -25,8 +25,10 @@ MAX_RUNS = 25
 HOME_ADV = 1.04          # small home-field advantage in MLB
 FALLBACK_LEAGUE_AVG = 4.5
 MODEL_VERSION = "poisson_v2"
+MODEL_VERSION_BP = "poisson_v3_bullpen"
 SPORT_KEY = "baseball_mlb"
 PITCHER_WEIGHT = 0.6     # blend: 60% starting pitcher RA9 / 40% team defense
+DEFAULT_STARTER_IP = 5.5  # historical MLB average IP/GS when starter data is missing
 
 
 def _safe(v, default=0.0):
@@ -122,11 +124,97 @@ def build_pitcher_adjustments():
     """Load today's probable starters keyed by (game_id, side)."""
     rows = (
         supabase.table("mlb_pitchers")
-        .select("game_id,side,pitcher_name,shrunk_ra9_index,games_started")
+        .select("game_id,side,pitcher_name,shrunk_ra9_index,games_started,innings_pitched")
         .execute()
         .data
     )
     return {(r["game_id"], r["side"]): r for r in rows}
+
+
+def build_bullpen_strength():
+    """Load team bullpen stats keyed by team_name (current season only)."""
+    season = datetime.now(ZoneInfo("America/Toronto")).year
+    try:
+        rows = (
+            supabase.table("mlb_bullpen_strength")
+            .select("team_name,shrunk_ra9_index,bullpen_ip")
+            .eq("season", season)
+            .execute()
+            .data
+        )
+        return {r["team_name"]: r for r in rows}
+    except Exception:
+        return {}
+
+
+def _parse_ip_str(ip_str):
+    """'69.1' → 69.333 (baseball IP notation: tenths = outs, not decimal thirds)."""
+    try:
+        parts = str(ip_str).split(".")
+        full = int(parts[0])
+        outs = int(parts[1]) if len(parts) > 1 else 0
+        return full + outs / 3.0
+    except Exception:
+        return 0.0
+
+
+def compute_xr_v3(home_pitcher, away_pitcher, home_bp, away_bp,
+                  h_score, a_score, h_allow, a_allow, league_avg):
+    """
+    Expected runs with explicit starter/bullpen innings split.
+
+    Defensive quality = (starter_fraction * starter_def) + (bullpen_fraction * bullpen_def)
+    where each def factor = PITCHER_WEIGHT * personnel_ra9_index + (1-PITCHER_WEIGHT) * team_allow_index
+    """
+    def _ip_per_start(pitcher):
+        if not pitcher:
+            return DEFAULT_STARTER_IP
+        gs = int(pitcher.get("games_started") or 0)
+        ip = _parse_ip_str(pitcher.get("innings_pitched") or "0")
+        if gs > 0 and ip > 0:
+            return max(4.0, min(7.5, ip / gs))
+        return DEFAULT_STARTER_IP
+
+    def _p_idx(pitcher):
+        if not pitcher:
+            return None
+        v = pitcher.get("shrunk_ra9_index")
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _bp_idx(bp):
+        if not bp:
+            return 1.0
+        try:
+            return float(bp.get("shrunk_ra9_index") or 1.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    # Away pitcher faces home offense; home pitcher faces away offense
+    away_ips = _ip_per_start(away_pitcher)
+    home_ips = _ip_per_start(home_pitcher)
+
+    away_sf = away_ips / 9.0          # away starter's fraction of game
+    home_sf = home_ips / 9.0
+
+    away_pi = _p_idx(away_pitcher)
+    home_pi = _p_idx(home_pitcher)
+
+    # Defensive factors for each component
+    away_starter_def = (PITCHER_WEIGHT * away_pi + (1 - PITCHER_WEIGHT) * a_allow) if away_pi is not None else a_allow
+    away_bp_def = PITCHER_WEIGHT * _bp_idx(away_bp) + (1 - PITCHER_WEIGHT) * a_allow
+
+    home_starter_def = (PITCHER_WEIGHT * home_pi + (1 - PITCHER_WEIGHT) * h_allow) if home_pi is not None else h_allow
+    home_bp_def = PITCHER_WEIGHT * _bp_idx(home_bp) + (1 - PITCHER_WEIGHT) * h_allow
+
+    a_def_v3 = away_sf * away_starter_def + (1 - away_sf) * away_bp_def
+    h_def_v3 = home_sf * home_starter_def + (1 - home_sf) * home_bp_def
+
+    home_xr = max(0.5, min(15.0, league_avg * h_score * a_def_v3 * HOME_ADV))
+    away_xr = max(0.5, min(15.0, league_avg * a_score * h_def_v3))
+    return home_xr, away_xr
 
 
 def main():
@@ -153,9 +241,12 @@ def main():
     league_avg = (sum(league_avgs) / len(league_avgs)) if league_avgs else FALLBACK_LEAGUE_AVG
 
     pitchers = build_pitcher_adjustments()
+    bullpens = build_bullpen_strength()
+    has_bullpen = bool(bullpens)
 
     seen = set()
     saved = 0
+    saved_v3 = 0
 
     for g in games:
         gid = g["id"]
@@ -206,19 +297,52 @@ def main():
         ).execute()
         saved += 1
 
+        # --- v3 bullpen-adjusted prediction (stored separately, production unchanged) ---
+        if has_bullpen:
+            home_bp = bullpens.get(home)
+            away_bp = bullpens.get(away)
+            home_xr_v3, away_xr_v3 = compute_xr_v3(
+                home_pitcher, away_pitcher, home_bp, away_bp,
+                h_score, a_score, h_allow, a_allow, league_avg,
+            )
+            m_v3 = markets_from_matrix(
+                build_run_matrix(home_xr_v3, away_xr_v3), home_xr_v3, away_xr_v3
+            )
+            row_v3 = {
+                "game_id": gid,
+                "model_version": MODEL_VERSION_BP,
+                "home_team_name": home,
+                "away_team_name": away,
+                "expected_home_runs": round(home_xr_v3, 3),
+                "expected_away_runs": round(away_xr_v3, 3),
+                "expected_total_runs": round(home_xr_v3 + away_xr_v3, 3),
+                **m_v3,
+            }
+            supabase.table("mlb_run_predictions").upsert(
+                row_v3, on_conflict="game_id,model_version"
+            ).execute()
+            saved_v3 += 1
+
         h_data = "strength" if hs else "prior"
         a_data = "strength" if as_ else "prior"
         hp_label = f"{home_pitcher['pitcher_name']} idx={home_pitcher['shrunk_ra9_index']}" if home_pitcher else "TBD"
         ap_label = f"{away_pitcher['pitcher_name']} idx={away_pitcher['shrunk_ra9_index']}" if away_pitcher else "TBD"
+        bp_note = ""
+        if has_bullpen and saved_v3 > 0:
+            h_bp = bullpens.get(home)
+            a_bp = bullpens.get(away)
+            h_bpidx = f"{h_bp['shrunk_ra9_index']}" if h_bp else "avg"
+            a_bpidx = f"{a_bp['shrunk_ra9_index']}" if a_bp else "avg"
+            bp_note = f" | BP idx: {home}={h_bpidx} {away}={a_bpidx}"
         print(
             f"{home} vs {away} | xR {home_xr:.2f}-{away_xr:.2f} | "
             f"ML {m['home_win_probability']}/{m['away_win_probability']} | "
             f"O8.5 {m['over_85_probability']} | RL h-1.5 {m['home_rl_minus15_prob']} "
             f"[{h_data}/{a_data}]\n"
-            f"  SP: {home}→{hp_label} | {away}→{ap_label}"
+            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}"
         )
 
-    print(f"\n✅ MLB Poisson run predictions saved: {saved}")
+    print(f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | {saved_v3} (v3 bullpen)")
 
 
 if __name__ == "__main__":

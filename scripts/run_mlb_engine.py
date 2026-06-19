@@ -4,9 +4,10 @@ MLB Sharp Engine — daily run script.
 Stage order:
   1. Ingest games + odds (alt markets and player props combined into per-event call)
   2. Starting pitchers from MLB Stats API (free, keyless)
+  2b. Bullpen strength from MLB Stats API (one extra call; feeds v3 comparison model)
   3. Batting lineups from MLB Stats API (when confirmed; skips if too early)
   4. Team run-scoring/allowing strength
-  5. Poisson run model → moneyline / totals / run-line probabilities
+  5. Poisson run model → writes poisson_v2 (production) AND poisson_v3_bullpen (shadow)
   6. Game-level final picks: multi-market selection + honest calibration + Safe Zone
   7. Player prop predictions: pitcher K/Outs/ER/H/BB + batter H+R+RBI
   8. Grade settled game picks + prop picks
@@ -22,13 +23,16 @@ COMMANDS = [
     # 2. Starting pitchers from MLB Stats API
     "python -m src.ingestion.sync_mlb_pitchers",
 
+    # 2b. Bullpen strength (1 free API call; skips gracefully if table missing)
+    "python -m src.ingestion.sync_mlb_bullpen",
+
     # 3. Batting lineups (skips gracefully if not yet confirmed)
     "python -m src.ingestion.sync_mlb_lineups",
 
     # 4. Team strength
     "python -m src.features.build_mlb_team_strength",
 
-    # 5. Poisson run model
+    # 5. Poisson run model (writes v2 production + v3 bullpen shadow for comparison)
     "python -m src.models.generate_mlb_run_predictions",
 
     # 6. Game-level picks: moneyline / totals / run-line + Safe Zone
