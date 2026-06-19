@@ -103,6 +103,13 @@ jobs:
         run: |
           python -m src.ingestion.sync_mlb_lineups
 
+      - name: Recompute v4 lineup predictions + picks for window games (0 Odds API credits)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.models.refresh_mlb_v4_lineup
+
       - name: Generate batter props for window games
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
