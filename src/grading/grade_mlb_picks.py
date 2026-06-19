@@ -25,6 +25,33 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 SPORT_KEY = "baseball_mlb"
 FINISHED_STATUSES = {"ft", "aot", "post", "f", "final", "game finished", "finished"}
 
+# Bidirectional team name/abbreviation aliases.
+# Maps every known form → one canonical key so both sides of a comparison
+# resolve identically regardless of which API or pick-generation path produced
+# the name (e.g. OAK vs ATH after the A's relocation, ARI vs AZ, etc.).
+_TEAM_ALIASES: dict[str, str] = {
+    # Athletics: moved from Oakland; some books/APIs still use OAK
+    "oak": "ath", "ath": "ath",
+    "oakland athletics": "ath", "sacramento athletics": "ath", "athletics": "ath",
+    # Diamondbacks: MLB Stats API uses "AZ", most others use "ARI"
+    "ari": "az", "az": "az", "arizona diamondbacks": "az",
+    # Nationals: WAS (our data) vs WSH (MLB API)
+    "was": "wsh", "wsh": "wsh", "washington nationals": "wsh",
+    # Giants: SFG (Retrosheet/some APIs) vs SF
+    "sfg": "sf", "sf": "sf", "san francisco giants": "sf",
+    # White Sox: CHW (baseball-reference) vs CWS (odds APIs)
+    "chw": "cws", "cws": "cws", "chicago white sox": "cws",
+}
+
+
+def _team_key(name: str) -> str:
+    n = (name or "").lower().strip()
+    return _TEAM_ALIASES.get(n, n)
+
+
+def _teams_match(a: str, b: str) -> bool:
+    return _team_key(a) == _team_key(b)
+
 
 def _num(v, default=0.0):
     try:
@@ -34,10 +61,9 @@ def _num(v, default=0.0):
 
 
 def _is_finished(g):
-    return (
-        (g.get("status") or "").lower() in FINISHED_STATUSES
-        or (g.get("period") or "").lower() in FINISHED_STATUSES
-    )
+    status = (g.get("status") or "").lower()
+    period = (g.get("period") or "").lower()
+    return status in FINISHED_STATUSES or period in FINISHED_STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +85,7 @@ def grade_mlb_pick(market, pick, home, away, home_score, away_score):
 
     if m == "moneyline":
         winner = home if home_score > away_score else away
-        return "WIN" if pl == winner.lower() else "LOSS"
+        return "WIN" if _teams_match(pl, winner) else "LOSS"
 
     if m == "totals":
         mat = re.match(r"^(over|under)\s+([\d.]+)$", pl)
@@ -78,9 +104,9 @@ def grade_mlb_pick(market, pick, home, away, home_score, away_score):
             line = float(line_str)
         except ValueError:
             return "VOID"
-        if team.lower() == home.lower():
+        if _teams_match(team, home):
             team_margin = diff
-        elif team.lower() == away.lower():
+        elif _teams_match(team, away):
             team_margin = -diff
         else:
             return "VOID"
@@ -113,7 +139,7 @@ def grade_mlb_safe_zone_pick(pick, home, away, home_score, away_score):
     if pl.endswith(" moneyline"):
         team = p[: -len(" moneyline")].strip()
         winner = home if home_score > away_score else away
-        return "WIN" if team.lower() == winner.lower() else "LOSS"
+        return "WIN" if _teams_match(team, winner) else "LOSS"
 
     # "{Team} +1.5" / "{Team} +2.5"
     parts = p.rsplit(None, 1)
@@ -123,9 +149,9 @@ def grade_mlb_safe_zone_pick(pick, home, away, home_score, away_score):
             line = float(line_str)
         except ValueError:
             return "VOID"
-        if team.lower() == home.lower():
+        if _teams_match(team, home):
             team_margin = diff
-        elif team.lower() == away.lower():
+        elif _teams_match(team, away):
             team_margin = -diff
         else:
             return "VOID"

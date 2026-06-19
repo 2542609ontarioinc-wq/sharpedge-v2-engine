@@ -63,29 +63,68 @@ def _fetch_gamelog(player_mlb_id, season, group):
         return []
 
 
-def _extract_stat(splits, game_date_str, prop_market):
-    """Find the split matching game_date_str and return the relevant stat."""
+def _find_player_in_splits(splits, search_name: str):
+    """
+    Fuzzy player name lookup within a splits list (fallback utility).
+    Tries: (a) exact lowercased match, (b) partial containment, (c) last-name match.
+    Returns the first matching split, or None.  Used when player_mlb_id lookup fails.
+    """
+    if not search_name:
+        return None
+    needle = search_name.lower().strip()
+    last = needle.split()[-1] if needle.split() else needle
+
+    exact = partial = last_match = None
+    for sp in splits:
+        player = (sp.get("player") or {})
+        full = (player.get("fullName") or "").lower().strip()
+        if not full:
+            continue
+        if full == needle and exact is None:
+            exact = sp
+        if needle in full and partial is None:
+            partial = sp
+        if full.split()[-1] == last and last_match is None:
+            last_match = sp
+
+    return exact or partial or last_match
+
+
+def _extract_split(splits, game_date_str, prop_market):
+    """
+    Find the split for game_date_str and return (value, ip, ab).
+
+    ip  — innings pitched as a decimal float (e.g. 6.333 for 6⅓ IP), or None
+    ab  — at-bats integer (0 means batter was scratched / didn't bat)
+    value — the prop stat, or None if the date isn't found
+    All three are None when no matching split exists.
+    """
     for split in splits:
         if split.get("date") == game_date_str:
             s = split.get("stat") or {}
+            ip = _parse_ip(s.get("inningsPitched"))
+            ab = int(s.get("atBats") or 0)
+
             if prop_market == "strikeouts":
-                return float(s.get("strikeOuts") or 0)
-            if prop_market == "outs_recorded":
-                ip = _parse_ip(s.get("inningsPitched"))
-                return round(ip * 3, 1) if ip is not None else None
-            if prop_market == "earned_runs":
-                return float(s.get("earnedRuns") or 0)
-            if prop_market == "hits_allowed":
-                return float(s.get("hits") or 0)
-            if prop_market == "walks":
-                return float(s.get("baseOnBalls") or 0)
-            if prop_market == "h_r_rbi":
-                return (
+                value = float(s.get("strikeOuts") or 0)
+            elif prop_market == "outs_recorded":
+                value = round(ip * 3, 1) if ip is not None else None
+            elif prop_market == "earned_runs":
+                value = float(s.get("earnedRuns") or 0)
+            elif prop_market == "hits_allowed":
+                value = float(s.get("hits") or 0)
+            elif prop_market == "walks":
+                value = float(s.get("baseOnBalls") or 0)
+            elif prop_market == "h_r_rbi":
+                value = (
                     float(s.get("hits") or 0)
                     + float(s.get("runs") or 0)
                     + float(s.get("rbi") or 0)
                 )
-    return None
+            else:
+                value = None
+            return value, ip, ab
+    return None, None, None
 
 
 def _grade(actual, line, pick_side):
@@ -121,6 +160,7 @@ def main():
         .execute()
         .data
     )
+    # Only grade against games that are definitively Final in our DB.
     finished = {
         g["id"]: g for g in games
         if (g.get("status") or "").lower() in FINISHED_STATUSES
@@ -156,8 +196,22 @@ def main():
             gamelog_cache[cache_key] = _fetch_gamelog(player_id, season, group)
             time.sleep(0.08)
 
-        actual = _extract_stat(gamelog_cache[cache_key], game_date, prop_market)
-        grade = _grade(actual, market_line, pick_side)
+        actual, ip, ab = _extract_split(gamelog_cache[cache_key], game_date, prop_market)
+
+        # Void conditions — mirrors sportsbook rules:
+        #   Pitcher props: VOID if no gamelog entry, 0 IP, or fewer than 3.0 IP
+        #     (books void when the starter is pulled before completing 3 innings).
+        #   Batter props: VOID if no gamelog entry or 0 at-bats (scratched / DNP).
+        is_pitcher = prop.get("player_type") == "pitcher"
+        if actual is None:
+            grade = "VOID"
+        elif is_pitcher and (ip is None or ip < 3.0):
+            grade = "VOID"
+        elif not is_pitcher and ab == 0:
+            grade = "VOID"
+        else:
+            grade = _grade(actual, market_line, pick_side)
+
         units = _units(grade, prop.get("best_odds_decimal"))
 
         row = {
