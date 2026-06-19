@@ -1,9 +1,11 @@
 """
-Compare poisson_v2, poisson_v3_bullpen, and poisson_v4_lineup.
+Compare poisson_v2 through poisson_v6_form.
 
   v2          — starter-only pitcher blend, team-level offense
   v3_bullpen  — explicit starter/bullpen innings split on defense
   v4_lineup   — v3 defense + lineup-aware offense (confirmed batters × handedness splits)
+  v5_env      — v4 + park factors + weather adjustment (Open-Meteo)
+  v6_form     — v5 + recent L10 form adjustment (MLB Stats API, 70/30 season/recent blend)
 
 Joins mlb_run_predictions for all versions against finished games with actual scores.
 Prints per-version: MAE for xRuns, win-prediction accuracy, Brier score, and O/U accuracy.
@@ -26,7 +28,8 @@ V2 = "poisson_v2"
 V3 = "poisson_v3_bullpen"
 V4 = "poisson_v4_lineup"
 V5 = "poisson_v5_environment"
-VERSIONS = [V2, V3, V4, V5]
+V6 = "poisson_v6_form"
+VERSIONS = [V2, V3, V4, V5, V6]
 SPORT_KEY = "baseball_mlb"
 FINISHED_STATUSES = {"FT", "AOT", "POST", "F", "FINAL", "GAME FINISHED"}
 
@@ -166,6 +169,7 @@ def main():
         "poisson_v3_bullpen": "v3_bullpen",
         "poisson_v4_lineup": "v4_lineup",
         "poisson_v5_environment": "v5_env",
+        "poisson_v6_form": "v6_form",
     }
     header_cols = "".join(f"{LABELS.get(v, v):>{COL}}" for v in VERSIONS)
     sep = "=" * (32 + COL * len(VERSIONS))
@@ -203,7 +207,7 @@ def main():
     mae_v2 = results.get(V2, {}).get("mae_total_xr")
     if mae_v2 is not None:
         print()
-        for ver, label in [(V3, "v3"), (V4, "v4"), (V5, "v5")]:
+        for ver, label in [(V3, "v3"), (V4, "v4"), (V5, "v5"), (V6, "v6")]:
             if ver not in results:
                 continue
             mae_ver = results[ver]["mae_total_xr"]

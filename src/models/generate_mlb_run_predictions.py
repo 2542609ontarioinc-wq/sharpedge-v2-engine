@@ -29,6 +29,7 @@ MODEL_VERSION = "poisson_v2"
 MODEL_VERSION_BP = "poisson_v3_bullpen"
 MODEL_VERSION_LU = "poisson_v4_lineup"
 MODEL_VERSION_ENV = "poisson_v5_environment"
+MODEL_VERSION_FORM = "poisson_v6_form"
 SPORT_KEY = "baseball_mlb"
 PITCHER_WEIGHT = 0.6     # blend: 60% starting pitcher RA9 / 40% team defense
 DEFAULT_STARTER_IP = 5.5  # historical MLB average IP/GS when starter data is missing
@@ -401,6 +402,151 @@ def compute_xr_v5(home_xr_v4, away_xr_v4, env_adj_total):
     )
 
 
+# ---------------------------------------------------------------------------
+# v6: Recent form (last-10 games) adjustment — MLB Stats API (free, keyless)
+# ---------------------------------------------------------------------------
+
+# (substring_in_lower_team_name, mlb_stats_api_team_id)
+_MLB_TEAM_ID_MAP = [
+    ("white sox",   145),
+    ("red sox",     111),
+    ("blue jays",   141),
+    ("diamondback", 109),
+    ("braves",      144),
+    ("orioles",     110),
+    ("cubs",        112),
+    ("reds",        113),
+    ("guardians",   114),
+    ("rockies",     115),
+    ("tigers",      116),
+    ("astros",      117),
+    ("royals",      118),
+    ("angels",      108),
+    ("dodgers",     119),
+    ("marlins",     146),
+    ("brewers",     158),
+    ("twins",       142),
+    ("mets",        121),
+    ("yankees",     147),
+    ("athletics",   133),
+    ("phillies",    143),
+    ("pirates",     134),
+    ("padres",      135),
+    ("mariners",    136),
+    ("giants",      137),
+    ("cardinals",   138),
+    ("rays",        139),
+    ("rangers",     140),
+    ("nationals",   120),
+]
+
+FORM_RECENT_WEIGHT = 0.30   # 70% season / 30% recent; shrunk for < 10 games
+
+
+def _lookup_mlb_team_id(team_name):
+    tn = (team_name or "").lower()
+    for keyword, tid in _MLB_TEAM_ID_MAP:
+        if keyword in tn:
+            return tid
+    return None
+
+
+def _fetch_recent_form(team_id, yesterday_str, season, cache, n_games=10):
+    """
+    Query MLB Stats API for the last n_games finished regular-season results.
+    Returns (avg_rs, avg_ra, n_actual) or None on failure.
+    Caches by team_id so each team is only fetched once per run.
+    """
+    if team_id in cache:
+        return cache[team_id]
+    try:
+        start = (datetime.fromisoformat(yesterday_str) - timedelta(days=45)).isoformat()[:10]
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={
+                "sportId": 1,
+                "teamId": team_id,
+                "startDate": start,
+                "endDate": yesterday_str,
+                "hydrate": "linescore",
+                "gameType": "R",
+                "season": season,
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            cache[team_id] = None
+            return None
+        data = resp.json()
+        games = []
+        for date_block in (data.get("dates") or []):
+            for game in (date_block.get("games") or []):
+                if (game.get("status") or {}).get("abstractGameState") != "Final":
+                    continue
+                ls = game.get("linescore", {})
+                ls_teams = ls.get("teams", {})
+                home_runs = ls_teams.get("home", {}).get("runs")
+                away_runs = ls_teams.get("away", {}).get("runs")
+                if home_runs is None or away_runs is None:
+                    continue
+                home_tid = (game.get("teams", {}).get("home", {}).get("team", {}).get("id"))
+                away_tid = (game.get("teams", {}).get("away", {}).get("team", {}).get("id"))
+                if home_tid == team_id:
+                    games.append((int(home_runs), int(away_runs)))
+                elif away_tid == team_id:
+                    games.append((int(away_runs), int(home_runs)))
+        recent = games[-n_games:]
+        if not recent:
+            cache[team_id] = None
+            return None
+        result = (
+            sum(g[0] for g in recent) / len(recent),  # avg runs scored
+            sum(g[1] for g in recent) / len(recent),  # avg runs allowed
+            len(recent),
+        )
+    except Exception:
+        result = None
+    cache[team_id] = result
+    return result
+
+
+def compute_xr_v6(home_xr_v5, away_xr_v5,
+                   h_score, a_score, h_allow, a_allow,
+                   home_form, away_form, league_avg):
+    """
+    v6 = v5 × multiplicative recent-form adjustment.
+
+    For each team, blends season index (70%) with L10 rate (30%, shrunk by
+    games available).  The multiplier = blended_idx / season_idx; applied to
+    the offensive side of one team and the defensive side of the other, which
+    is how they each contribute to a given team's expected runs.
+    """
+    def _mult(season_idx, recent_per_game, n_games):
+        if recent_per_game is None or n_games == 0 or season_idx <= 0 or league_avg <= 0:
+            return 1.0
+        weight = FORM_RECENT_WEIGHT * min(n_games, 10) / 10.0
+        recent_idx = recent_per_game / league_avg
+        blended = (1.0 - weight) * season_idx + weight * recent_idx
+        return blended / season_idx
+
+    h_rs = home_form[0] if home_form else None
+    h_ra = home_form[1] if home_form else None
+    h_n  = home_form[2] if home_form else 0
+    a_rs = away_form[0] if away_form else None
+    a_ra = away_form[1] if away_form else None
+    a_n  = away_form[2] if away_form else 0
+
+    # home expected runs: home offense × away defense (each nudged by recent form)
+    home_xr_v6 = max(0.5, min(15.0,
+        home_xr_v5 * _mult(h_score, h_rs, h_n) * _mult(a_allow, a_ra, a_n)
+    ))
+    # away expected runs: away offense × home defense
+    away_xr_v6 = max(0.5, min(15.0,
+        away_xr_v5 * _mult(a_score, a_rs, a_n) * _mult(h_allow, h_ra, h_n)
+    ))
+    return home_xr_v6, away_xr_v6
+
+
 def build_bullpen_strength():
     """Load team bullpen stats keyed by team_name (current season only)."""
     season = datetime.now(ZoneInfo("America/Toronto")).year
@@ -517,12 +663,17 @@ def main():
     batter_splits, game_lineups, pitcher_hands = build_lineup_data(today)
     has_lineup = bool(batter_splits)
 
+    yesterday = (today - timedelta(days=1)).isoformat()
+    season = today.year
+
     seen = set()
     saved = 0
     saved_v3 = 0
     saved_v4 = 0
     saved_v5 = 0
+    saved_v6 = 0
     weather_cache = {}    # (lat, lon, game_date) → weather tuple | None
+    form_cache = {}       # team_id → (avg_rs, avg_ra, n) | None
 
     for g in games:
         gid = g["id"]
@@ -672,6 +823,35 @@ def main():
             ).execute()
             saved_v5 += 1
 
+            # v6: v5 + recent form (L10 games from MLB Stats API, free/keyless)
+            home_tid = _lookup_mlb_team_id(home)
+            away_tid = _lookup_mlb_team_id(away)
+            home_form = _fetch_recent_form(home_tid, yesterday, season, form_cache) if home_tid else None
+            away_form = _fetch_recent_form(away_tid, yesterday, season, form_cache) if away_tid else None
+
+            home_xr_v6, away_xr_v6 = compute_xr_v6(
+                home_xr_v5, away_xr_v5,
+                h_score, a_score, h_allow, a_allow,
+                home_form, away_form, league_avg,
+            )
+            m_v6 = markets_from_matrix(
+                build_run_matrix(home_xr_v6, away_xr_v6), home_xr_v6, away_xr_v6
+            )
+            row_v6 = {
+                "game_id": gid,
+                "model_version": MODEL_VERSION_FORM,
+                "home_team_name": home,
+                "away_team_name": away,
+                "expected_home_runs": round(home_xr_v6, 3),
+                "expected_away_runs": round(away_xr_v6, 3),
+                "expected_total_runs": round(home_xr_v6 + away_xr_v6, 3),
+                **m_v6,
+            }
+            supabase.table("mlb_run_predictions").upsert(
+                row_v6, on_conflict="game_id,model_version"
+            ).execute()
+            saved_v6 += 1
+
         h_data = "strength" if hs else "prior"
         a_data = "strength" if as_ else "prior"
         hp_label = f"{home_pitcher['pitcher_name']} idx={home_pitcher['shrunk_ra9_index']}" if home_pitcher else "TBD"
@@ -707,17 +887,26 @@ def main():
                 )
             else:
                 env_note = f" | park={_park_adj_disp:+.2f} w=n/a"
+        form_note = ""
+        if has_bullpen and saved_v6 > 0:
+            h_f = home_form
+            a_f = away_form
+            h_str = f"L{h_f[2]}={h_f[0]:.1f}rs/{h_f[1]:.1f}ra" if h_f else "no-data"
+            a_str = f"L{a_f[2]}={a_f[0]:.1f}rs/{a_f[1]:.1f}ra" if a_f else "no-data"
+            v6_delta = (home_xr_v6 + away_xr_v6) - (home_xr_v5 + away_xr_v5)
+            form_note = f" | form: {home}={h_str} {away}={a_str} Δtot={v6_delta:+.2f}"
         print(
             f"{home} vs {away} | xR {home_xr:.2f}-{away_xr:.2f} | "
             f"ML {m['home_win_probability']}/{m['away_win_probability']} | "
             f"O8.5 {m['over_85_probability']} | RL h-1.5 {m['home_rl_minus15_prob']} "
             f"[{h_data}/{a_data}]\n"
-            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}{env_note}"
+            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}{env_note}{form_note}"
         )
 
     print(
         f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | "
-        f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup) | {saved_v5} (v5 environment)"
+        f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup) | "
+        f"{saved_v5} (v5 environment) | {saved_v6} (v6 form)"
     )
 
 
