@@ -19,10 +19,15 @@ Routing:
 
 Both tables are purged at the start of each run (same pattern as before).
 """
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import requests
 from supabase import create_client
 
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY, ODDS_API_KEY
+
+TORONTO = ZoneInfo("America/Toronto")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -60,17 +65,35 @@ def _implied(dec):
     return round((1 / dec) * 100, 2)
 
 
-def _find_game_id(home, away):
-    rows = (
+def _event_date_toronto(event):
+    """Convert Odds API commence_time (UTC ISO) to Toronto local date string."""
+    ct = event.get("commence_time", "")
+    if not ct:
+        return None
+    try:
+        dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+        return dt.astimezone(TORONTO).date().isoformat()
+    except Exception:
+        return None
+
+
+def _find_game_id(home, away, event_date=None):
+    """Match an Odds API event to a Supabase game_id.
+
+    event_date (YYYY-MM-DD Toronto) is required to avoid cross-day collisions when
+    the same teams meet multiple times in a week.  Without it the query can return
+    a game from a different date, silently poisoning downstream props.
+    """
+    q = (
         supabase.table("games")
         .select("id")
         .eq("sport_key", SPORT_KEY)
         .ilike("home_team_name", home)
         .ilike("away_team_name", away)
-        .limit(1)
-        .execute()
-        .data
     )
+    if event_date:
+        q = q.eq("game_date", event_date)
+    rows = q.limit(1).execute().data
     return rows[0]["id"] if rows else None
 
 
@@ -127,13 +150,21 @@ def main():
     events = resp.json()
     saved = 0
 
+    unmatched_games = []
     for event in events:
         home = event.get("home_team")
         away = event.get("away_team")
-        game_id = _find_game_id(home, away)
+        event_date = _event_date_toronto(event)
+        game_id = _find_game_id(home, away, event_date)
+        if not game_id:
+            unmatched_games.append(f"{away} @ {home} ({event_date})")
         saved += _save_bookmakers(event.get("bookmakers", []), home, away, game_id)
 
     print(f"  Main-market rows saved: {saved}")
+    if unmatched_games:
+        print(f"  ⚠ {len(unmatched_games)} games not in Supabase games table (props stored with NULL game_id, will be ignored by generator):")
+        for g in unmatched_games:
+            print(f"    - {g}")
 
     # --- Per-event calls: alt markets + player props in ONE combined call per game ---
     # Combining them keeps total API credits at 1 bulk + N per-event (no extra cost).
@@ -142,7 +173,8 @@ def main():
         event_id = event.get("id")
         home = event.get("home_team")
         away = event.get("away_team")
-        game_id = _find_game_id(home, away)
+        event_date = _event_date_toronto(event)
+        game_id = _find_game_id(home, away, event_date)
 
         try:
             alt_resp = requests.get(

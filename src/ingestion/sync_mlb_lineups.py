@@ -89,7 +89,7 @@ def main():
         for g in sb_games
     }
 
-    saved = matched = skipped_no_lineup = 0
+    saved = matched = skipped_no_lineup = skipped_no_match = 0
 
     for date_str in dates:
         try:
@@ -110,6 +110,8 @@ def main():
                 key = (_norm(home_name), _norm(away_name), date_str)
                 game_id = sb_lookup.get(key)
                 if not game_id:
+                    skipped_no_match += 1
+                    print(f"  ⚠ {date_str} {away_name} @ {home_name}: not in Supabase games table (name mismatch?)")
                     continue
                 matched += 1
 
@@ -178,8 +180,13 @@ def main():
 
     print(
         f"\n✅ MLB lineups synced: {saved} batters | "
-        f"{matched} games matched | {skipped_no_lineup} pending lineup"
+        f"{matched} games matched | {skipped_no_lineup} pending lineup | "
+        f"{skipped_no_match} not in game DB"
     )
+    if skipped_no_lineup > 0 and saved == 0 and matched > 0:
+        print("  ⚠ Lineups not yet posted — re-run after ~5 PM ET to get batter props")
+    if skipped_no_match > 0:
+        print(f"  ⚠ {skipped_no_match} MLB-API game(s) had no Supabase match — possible team-name mismatch")
 
 
 if __name__ == "__main__":

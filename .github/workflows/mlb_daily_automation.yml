@@ -2,13 +2,19 @@ name: SharpEdge MLB Daily Automation
 
 on:
   schedule:
-    # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — 2 hours after the soccer engine
+    # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — morning full-engine run
     - cron: "0 8 * * *"
+    # 21:00 UTC = ~5:00 PM Toronto (EDT) — lineups post ~90 min before first pitch;
+    # this second trigger re-syncs lineups and regenerates player props with real batter data.
+    - cron: "0 21 * * *"
   workflow_dispatch:
 
 jobs:
   run-mlb-engine:
     runs-on: ubuntu-latest
+    # Only the morning cron (or manual dispatch) runs the full engine.
+    # The evening cron (${{ github.event.schedule }}) runs only lineups + props.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * *'
 
     steps:
       - name: Checkout repo
@@ -44,3 +50,37 @@ jobs:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           python -m src.models.grade_mlb_results
+
+  refresh-lineups-and-props:
+    runs-on: ubuntu-latest
+    # Evening-only: sync confirmed lineups then regenerate player props.
+    # Odds from the morning run are still in mlb_player_prop_odds (not re-purged here).
+    # This is the step that actually produces batter H+R+RBI props.
+    if: github.event.schedule == '0 21 * * *'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        run: |
+          pip install -r requirements.txt
+
+      - name: Sync confirmed batting lineups
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.ingestion.sync_mlb_lineups
+
+      - name: Regenerate player props (pitcher + batter)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.models.generate_mlb_player_props

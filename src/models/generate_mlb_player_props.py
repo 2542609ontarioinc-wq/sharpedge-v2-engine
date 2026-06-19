@@ -321,7 +321,15 @@ def main():
     today = datetime.now(TORONTO).date()
     window_end = (today + timedelta(days=3)).isoformat()
 
+    # Purge upcoming props before regenerating so stale rows from prior runs don't linger.
+    # Past game rows (game_date < today) are kept for grading.
+    supabase.table("mlb_player_props").delete().gte("game_date", today.isoformat()).execute()
+
     prop_odds = supabase.table("mlb_player_prop_odds").select("*").execute().data
+    # Only odds with a real game_id are usable (null means the game wasn't in our games table)
+    prop_odds = [o for o in prop_odds if o.get("game_id") is not None]
+    print(f"  Prop odds loaded: {len(prop_odds)} rows across "
+          f"{len(set(o['game_id'] for o in prop_odds))} games")
 
     pitchers = (
         supabase.table("mlb_pitchers")
@@ -344,7 +352,12 @@ def main():
     except Exception:
         lineups = []
 
+    if not lineups:
+        print("  No lineup rows in mlb_lineups — batter props skipped.")
+        print("  Lineups post ~90 min before first pitch; re-run after ~5 PM ET to get batter props.")
+
     rows = []
+    pitcher_skipped_no_odds = 0
 
     # ── Pitcher props ──────────────────────────────────────────────────────
     for p in pitchers:
@@ -359,6 +372,13 @@ def main():
         for odds_key, prop_market, confidence_note in PITCHER_MARKETS:
             proj = projections.get(prop_market)
             if proj is None or proj <= 0:
+                continue
+
+            # Only generate when the book actually posts odds for this pitcher+market.
+            # Without real odds the 30/70 calibration is meaningless and the row
+            # would appear in the frontend as a pick with no price — pure noise.
+            if not _match_player(prop_odds, pitcher_name, odds_key):
+                pitcher_skipped_no_odds += 1
                 continue
 
             row = _build_prop_row(
@@ -383,15 +403,25 @@ def main():
                 f"cal={row['calibrated_over_prob']}% {flag_label} {confidence_note}"
             )
 
+    if pitcher_skipped_no_odds:
+        print(f"  Pitchers skipped (no market odds): {pitcher_skipped_no_odds} market-slots")
+
     # ── Batter props ───────────────────────────────────────────────────────
+    batter_skipped_no_odds = batter_skipped_low_gp = 0
     for batter in lineups:
         gp = int(batter.get("games_played") or 0)
         batter_name = batter.get("player_name", "")
         if gp < MIN_GAMES_BATTER:
+            batter_skipped_low_gp += 1
             continue
 
         avg_hrr = _safe(batter.get("avg_hrr_per_game"), None)
         if avg_hrr is None or avg_hrr <= 0:
+            continue
+
+        # Only generate when the book lists this batter in the H+R+RBI market.
+        if not _match_player(prop_odds, batter_name, "batter_hits_runs_rbis"):
+            batter_skipped_no_odds += 1
             continue
 
         row = _build_prop_row(
@@ -408,23 +438,12 @@ def main():
             odds_key="batter_hits_runs_rbis",
             confidence_note="solid",
         )
-
-        # Batter H+R+RBI: if no market or market line > 0.5, also compute Over 0.5
-        market_line = row.get("market_line")
-        if market_line is not None and abs(market_line - 0.5) > 0.01:
-            # Market has a different line — still record it; Over 0.5 is always implied
-            pass
-        elif market_line is None:
-            # No market: force line to 0.5 (the safe line the user requested)
-            p05 = over_prob(0.5, avg_hrr)
-            row["market_line"] = 0.5
-            row["model_over_prob"] = p05
-            row["calibrated_over_prob"] = p05
-            row["pick_side"] = "Over"
-            row["model_edge"] = None
-            row["edge_flag"] = "no-odds"
-
         rows.append(row)
+
+    if batter_skipped_no_odds:
+        print(f"  Batters skipped (not in book's H+R+RBI market): {batter_skipped_no_odds}")
+    if batter_skipped_low_gp:
+        print(f"  Batters skipped (< {MIN_GAMES_BATTER} GP): {batter_skipped_low_gp}")
 
     # ── Tier assignment and upsert ─────────────────────────────────────────
     _assign_tiers(rows)
@@ -439,7 +458,9 @@ def main():
         except Exception as e:
             print(f"  Failed: {row.get('player_name')} {row.get('prop_market')}: {e}")
 
-    print(f"\n✅ MLB player props saved: {saved} ({len(pitchers)} pitchers, {len(lineups)} batters)")
+    batter_saved = sum(1 for r in rows if r.get("player_type") == "batter")
+    pitcher_saved = sum(1 for r in rows if r.get("player_type") == "pitcher")
+    print(f"\n✅ MLB player props saved: {saved} ({pitcher_saved} pitchers, {batter_saved} batters)")
 
 
 if __name__ == "__main__":
