@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { MLBModelLabGame, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
+import type { MLBModelAnalytics, MLBModelLabGame, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
 import { SoccerGameGroupCard, MLBGameGroupCard } from "./GameGroupCard";
 import { SafeZoneCard } from "./SafeZoneCard";
 import { TrackRecordView } from "./TrackRecordView";
@@ -45,6 +45,7 @@ export function PicksView({
   mlbTrackRecord,
   mlbPlayerProps,
   mlbModelLab,
+  mlbModelAnalytics,
 }: {
   sharpPicks: SharpPick[];
   safeZone: SafeZonePick[];
@@ -54,6 +55,7 @@ export function PicksView({
   mlbTrackRecord: MLBTrackRecord;
   mlbPlayerProps: MLBPlayerProp[];
   mlbModelLab: MLBModelLabGame[];
+  mlbModelAnalytics: MLBModelAnalytics[];
 }) {
   const [sport, setSport] = useState<Sport>("soccer");
   const [tab, setTab] = useState<Tab>("sharp");
@@ -246,7 +248,7 @@ export function PicksView({
           />
         )
       ) : tab === "lab" ? (
-        <MLBModelLabView games={mlbModelLab} />
+        <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />
       ) : (
         <MLBTrackRecordView trackRecord={mlbTrackRecord} />
       )}

@@ -3,6 +3,7 @@ import type {
   GradedPick,
   MarketStats,
   MLBMarketStats,
+  MLBModelAnalytics,
   MLBModelLabGame,
   MLBModelVersionData,
   MLBPlayerProp,
@@ -570,6 +571,36 @@ type MLBRunPredictionRow = {
   under_85_probability: number | string | null;
 };
 
+type MLBModelPickRow = {
+  game_id: string;
+  model_version: string;
+  home_team_name: string | null;
+  away_team_name: string | null;
+  best_pick: string | null;
+  market: string | null;
+  calibrated_confidence: number | string | null;
+  balanced_pick: string | null;
+  balanced_prob: number | string | null;
+};
+
+function emptyModelVersion(version: string): MLBModelVersionData {
+  return {
+    version,
+    expectedHomeRuns: null,
+    expectedAwayRuns: null,
+    expectedTotalRuns: null,
+    homeWinProb: null,
+    awayWinProb: null,
+    over85Prob: null,
+    under85Prob: null,
+    bestPick: null,
+    market: null,
+    calibratedConfidence: null,
+    balancedPick: null,
+    balancedProb: null,
+  };
+}
+
 export async function getMLBModelLab(): Promise<MLBModelLabGame[]> {
   const today = todayTorontoISODate();
 
@@ -584,72 +615,128 @@ export async function getMLBModelLab(): Promise<MLBModelLabGame[]> {
   const gameIds = games.map((g) => g.id);
   const gamesById = new Map(games.map((g) => [g.id, g as GameRow]));
 
-  const { data: rows, error } = await supabase
-    .from("mlb_run_predictions")
-    .select(
-      "game_id, model_version, home_team_name, away_team_name, expected_home_runs, expected_away_runs, expected_total_runs, home_win_probability, away_win_probability, over_85_probability, under_85_probability"
-    )
-    .in("game_id", gameIds);
-  if (error) throw error;
-  if (!rows || rows.length === 0) return [];
+  const [{ data: runRows, error: runError }, { data: pickRows, error: pickError }] =
+    await Promise.all([
+      supabase
+        .from("mlb_run_predictions")
+        .select(
+          "game_id, model_version, home_team_name, away_team_name, expected_home_runs, expected_away_runs, expected_total_runs, home_win_probability, away_win_probability, over_85_probability, under_85_probability"
+        )
+        .in("game_id", gameIds),
+      supabase
+        .from("mlb_model_picks")
+        .select(
+          "game_id, model_version, home_team_name, away_team_name, best_pick, market, calibrated_confidence, balanced_pick, balanced_prob"
+        )
+        .in("game_id", gameIds),
+    ]);
+  if (runError) throw runError;
+  if (pickError) throw pickError;
 
-  const byGame = new Map<string, MLBRunPredictionRow[]>();
-  for (const row of rows as MLBRunPredictionRow[]) {
-    const list = byGame.get(row.game_id) ?? [];
-    list.push(row);
-    byGame.set(row.game_id, list);
+  // Build combined model data per (game_id, model_version)
+  type GameEntry = { models: Record<string, MLBModelVersionData>; homeTeam: string; awayTeam: string };
+  const byGame = new Map<string, GameEntry>();
+
+  for (const row of (runRows ?? []) as MLBRunPredictionRow[]) {
+    if (!byGame.has(row.game_id)) {
+      byGame.set(row.game_id, { models: {}, homeTeam: row.home_team_name, awayTeam: row.away_team_name });
+    }
+    const entry = byGame.get(row.game_id)!;
+    entry.models[row.model_version] = {
+      ...emptyModelVersion(row.model_version),
+      expectedHomeRuns: toNumber(row.expected_home_runs),
+      expectedAwayRuns: toNumber(row.expected_away_runs),
+      expectedTotalRuns: toNumber(row.expected_total_runs),
+      homeWinProb: toNumber(row.home_win_probability),
+      awayWinProb: toNumber(row.away_win_probability),
+      over85Prob: toNumber(row.over_85_probability),
+      under85Prob: toNumber(row.under_85_probability),
+    };
   }
+
+  for (const row of (pickRows ?? []) as MLBModelPickRow[]) {
+    if (!byGame.has(row.game_id)) {
+      byGame.set(row.game_id, {
+        models: {},
+        homeTeam: row.home_team_name ?? "",
+        awayTeam: row.away_team_name ?? "",
+      });
+    }
+    const entry = byGame.get(row.game_id)!;
+    const existing = entry.models[row.model_version] ?? emptyModelVersion(row.model_version);
+    existing.bestPick = row.best_pick;
+    existing.market = row.market;
+    existing.calibratedConfidence = toNumber(row.calibrated_confidence);
+    existing.balancedPick = row.balanced_pick;
+    existing.balancedProb = toNumber(row.balanced_prob);
+    entry.models[row.model_version] = existing;
+  }
+
+  if (byGame.size === 0) return [];
 
   const result: MLBModelLabGame[] = [];
 
-  for (const [gameId, preds] of byGame.entries()) {
+  for (const [gameId, { models, homeTeam, awayTeam }] of byGame.entries()) {
     const game = gamesById.get(gameId);
     if (!game) continue;
-
-    const models: Record<string, MLBModelVersionData> = {};
-    for (const pred of preds) {
-      models[pred.model_version] = {
-        version: pred.model_version,
-        expectedHomeRuns: toNumber(pred.expected_home_runs),
-        expectedAwayRuns: toNumber(pred.expected_away_runs),
-        expectedTotalRuns: toNumber(pred.expected_total_runs),
-        homeWinProb: toNumber(pred.home_win_probability),
-        awayWinProb: toNumber(pred.away_win_probability),
-        over85Prob: toNumber(pred.over_85_probability),
-        under85Prob: toNumber(pred.under_85_probability),
-      };
-    }
 
     const v2 = models["poisson_v2"];
     const v2Total = v2?.expectedTotalRuns ?? null;
     const v2Lean = v2?.over85Prob != null ? (v2.over85Prob > 50 ? "Over" : "Under") : null;
+
     let hasDisagreement = false;
     if (v2) {
       for (const [ver, m] of Object.entries(models)) {
         if (ver === "poisson_v2") continue;
-        const lean = m.over85Prob != null ? (m.over85Prob > 50 ? "Over" : "Under") : null;
+        const mLean = m.over85Prob != null ? (m.over85Prob > 50 ? "Over" : "Under") : null;
         const diff =
           v2Total != null && m.expectedTotalRuns != null
             ? Math.abs(m.expectedTotalRuns - v2Total)
             : null;
-        if (lean !== null && lean !== v2Lean) { hasDisagreement = true; break; }
+        if (mLean !== null && v2Lean !== null && mLean !== v2Lean) { hasDisagreement = true; break; }
         if (diff !== null && diff > 0.5) { hasDisagreement = true; break; }
+        // Pick-level divergence: same market, different side
+        if (v2.bestPick && m.bestPick && v2.market && m.market === v2.market && m.bestPick !== v2.bestPick) {
+          hasDisagreement = true; break;
+        }
       }
     }
 
-    const first = preds[0];
-    result.push({
-      gameId,
-      homeTeam: first.home_team_name,
-      awayTeam: first.away_team_name,
-      gameTime: game.start_time_toronto ?? null,
-      models,
-      hasDisagreement,
-    });
+    result.push({ gameId, homeTeam, awayTeam, gameTime: game.start_time_toronto ?? null, models, hasDisagreement });
   }
 
   result.sort((a, b) => (a.gameTime ?? "").localeCompare(b.gameTime ?? ""));
   return result;
+}
+
+type MLBModelAnalyticsRow = {
+  model_version: string;
+  games_graded: number | null;
+  mae_total_xr: number | string | null;
+  brier_score: number | string | null;
+  direction_accuracy: number | string | null;
+  win_rate: number | string | null;
+  roi_percent: number | string | null;
+  avg_clv: number | string | null;
+};
+
+export async function getMLBModelAnalytics(): Promise<MLBModelAnalytics[]> {
+  const { data, error } = await supabase
+    .from("mlb_model_analytics")
+    .select(
+      "model_version, games_graded, mae_total_xr, brier_score, direction_accuracy, win_rate, roi_percent, avg_clv"
+    );
+  if (error) throw error;
+  return ((data ?? []) as MLBModelAnalyticsRow[]).map((r) => ({
+    modelVersion: r.model_version,
+    gamesGraded: r.games_graded ?? 0,
+    mae: toNumber(r.mae_total_xr),
+    brierScore: toNumber(r.brier_score),
+    directionAccuracy: toNumber(r.direction_accuracy),
+    winRate: toNumber(r.win_rate),
+    roiPercent: toNumber(r.roi_percent),
+    avgClv: toNumber(r.avg_clv),
+  }));
 }
 
 export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {

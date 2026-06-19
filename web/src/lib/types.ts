@@ -139,6 +139,12 @@ export type MLBModelVersionData = {
   awayWinProb: number | null;
   over85Prob: number | null;
   under85Prob: number | null;
+  // From mlb_model_picks — null if that table has no row for this game+model
+  bestPick: string | null;
+  market: string | null;
+  calibratedConfidence: number | null;
+  balancedPick: string | null;
+  balancedProb: number | null;
 };
 
 export type MLBModelLabGame = {
@@ -148,4 +154,17 @@ export type MLBModelLabGame = {
   gameTime: string | null;
   models: Record<string, MLBModelVersionData>;
   hasDisagreement: boolean;
+};
+
+export type MLBModelAnalytics = {
+  modelVersion: string;
+  gamesGraded: number;
+  // win_rate stored as fraction (0–1); direction_accuracy same
+  // roi_percent stored as actual % (e.g. 5.2 for 5.2%); mae in run units
+  mae: number | null;
+  brierScore: number | null;
+  directionAccuracy: number | null;
+  winRate: number | null;
+  roiPercent: number | null;
+  avgClv: number | null;
 };
