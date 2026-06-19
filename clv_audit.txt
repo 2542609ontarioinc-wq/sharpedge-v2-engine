@@ -1,0 +1,143 @@
+MLB CLV AUDIT — 2026-06-19
+==========================
+
+PART 1 — AUDIT FINDINGS
+------------------------
+
+1. OPENING AND CLOSING ODDS CAPTURE
+-------------------------------------
+No — for MLB, neither exist.
+
+- sync_mlb_odds.py PURGES mlb_odds and mlb_player_prop_odds at the start of every run
+  (delete().eq("sport_key", ...)) and then reinserts fresh rows. Only one snapshot ever
+  exists in that table — today's, right now. There is no history table, no
+  timestamp-keyed append. By the time tomorrow's morning run fires, yesterday's closing
+  odds are gone.
+
+- mlb_final_predictions stores the odds_decimal and market_implied_probability at
+  pick-generation time (morning run, 8 AM UTC). That IS an implicit opening snapshot —
+  but only for the one best pick per game (not all legs of the market).
+
+- mlb_safe_zone stores balanced_novig_pct / banker_novig_pct at pick time. Same story —
+  opening is implicitly captured, closing is not.
+
+- There is no "pre-game closing capture" step anywhere in the engine or GitHub Actions.
+
+- mlb_player_prop_odds is also wiped every run. mlb_player_props.best_odds_decimal is
+  the only prop-price snapshot.
+
+
+2. CLV COMPUTATION PER GRADED PICK
+------------------------------------
+No. Completely absent for MLB. The existing CLV files:
+
+- build_clv_tracking.py — FAKE PLACEHOLDER: hardcodes opening_odds = -110,
+  closing_odds = -115. Writes to soccer_clv_tracking. Not called from anywhere in the
+  MLB pipeline.
+
+- build_real_clv_tracking.py — queries soccer_odds (not MLB), groups by
+  (game_id, market, selection, bookmaker), takes first/last row by captured_at.
+  Formula: clv_diff = closing_odds_decimal - opening_odds_decimal — this is comparing
+  raw decimals, not de-vigged probs. That is wrong (confuses odds format with
+  probability). For soccer only.
+
+- build_soccer_clv_tracker.py — soccer only, uses soccer_live_odds_snapshots.
+  Formula: ((opening - closing) / opening) * 100 — also not a proper CLV formula.
+
+- mlb_pick_grades schema: no CLV columns.
+- mlb_pick_results schema: no CLV columns.
+
+
+3. OPENING + CLOSING ODDS BY MARKET (MLB)
+-------------------------------------------
+  Market               Opening                                         Closing
+  -------------------  ----------------------------------------------  -------
+  moneyline (h2h)      Implicit in mlb_final_predictions               None
+                       .market_implied_probability (novig)
+  totals               Same                                            None
+  run-line             Same                                            None
+  alternate totals/    mlb_safe_zone.balanced_novig_pct etc.           None
+    spreads
+  player props         mlb_player_props.best_odds_decimal (1-sided)    None
+
+
+4. WHAT'S MISSING / BROKEN
+----------------------------
+- No append-only snapshot table for MLB odds. The wipe-and-replace pattern destroys
+  history on every run.
+
+- No closing-odds capture step. The hourly refresh-batter-props job does not call
+  sync_mlb_odds.
+
+- No CLV computation module for MLB.
+
+- No CLV storage columns in mlb_pick_grades or mlb_pick_results.
+
+- The correct CLV formula (de-vig both prices,
+  CLV = closing_novig_prob − opening_novig_prob) is not implemented anywhere.
+
+- Props CLV: structurally not feasible without both legs of the prop market at
+  closing — excluded by design.
+
+- build_clv_tracking.py uses hardcoded fake American odds (-110/-115).
+  This file should not be run.
+
+- build_real_clv_tracking.py uses raw decimal differences (not de-vigged probs)
+  and operates on soccer data only. The formula is incorrect.
+
+
+PART 2 — WHAT WAS BUILT (summary)
+------------------------------------
+See git diff for full implementation. In brief:
+
+  sql/077_mlb_odds_snapshots.sql      Append-only odds history table (never deleted).
+  sql/078_mlb_clv_tracking.sql        Per-pick CLV storage.
+  sql/079_mlb_pick_results_clv.sql    ALTER mlb_pick_results to add avg_clv,
+                                      clv_positive_count, clv_sample_size.
+
+  src/ingestion/sync_mlb_odds.py      Now also writes opening snapshot rows to
+                                      mlb_odds_snapshots (batch append, no delete).
+
+  src/ingestion/snap_mlb_odds_closing.py
+                                      New hourly script. Bulk-only call (h2h/totals/
+                                      spreads), 1 API credit. Appends closing snapshot
+                                      rows to mlb_odds_snapshots. Runs via the existing
+                                      refresh-batter-props job.
+
+  src/models/build_mlb_clv.py         CLV computation.
+                                      Opening novig: mlb_final_predictions or mlb_safe_zone
+                                      (already stored at pick time).
+                                      Closing novig: de-vigged from mlb_odds_snapshots
+                                      (latest snapshot before commence_time).
+                                      CLV = closing_novig_prob − opening_novig_prob.
+                                      Upserts mlb_clv_tracking; updates mlb_pick_results.
+
+  scripts/run_mlb_engine.py           Added step 10: build_mlb_clv.
+
+  .github/workflows/mlb_daily_automation.yml
+                                      Morning job: CLV step after grade.
+                                      Hourly job: snap_mlb_odds_closing before lineup sync.
+
+CLV FORMULA (implemented in build_mlb_clv.py)
+----------------------------------------------
+  For a 2-way market (legs A and B at decimal odds dec_A, dec_B):
+
+    raw_A = 1 / dec_A
+    raw_B = 1 / dec_B
+    total = raw_A + raw_B
+    novig_A = (raw_A / total) * 100   <- de-vigged implied probability (%)
+
+  CLV = closing_novig_prob - opening_novig_prob   (in percentage points)
+
+  Positive CLV: market moved toward our pick after publication.
+  Negative CLV: market moved against our pick.
+
+  Picks excluded from CLV stats (not counted as 0):
+    - no-odds picks (edge_flag = 'no-odds')
+    - VOID grades
+    - picks with no closing snapshot (alternate-line safe-zone, early-season games)
+    - player props (no 2-sided closing market available)
+
+SOCCER
+------
+Zero soccer files were touched.

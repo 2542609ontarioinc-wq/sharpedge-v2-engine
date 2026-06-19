@@ -4,16 +4,16 @@ on:
   schedule:
     # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — morning full-engine run
     - cron: "0 8 * * *"
-    # 21:00 UTC = ~5:00 PM Toronto (EDT) — lineups post ~90 min before first pitch;
-    # this second trigger re-syncs lineups and regenerates player props with real batter data.
-    - cron: "0 21 * * *"
+    # Hourly 14:00–23:00 UTC = 10 AM–7 PM ET — batter props for afternoon/evening games
+    - cron: "0 14-23 * * *"
+    # Hourly 00:00–03:00 UTC = 8 PM–11 PM ET — batter props for late-night games
+    - cron: "0 0-3 * * *"
   workflow_dispatch:
 
 jobs:
   run-mlb-engine:
     runs-on: ubuntu-latest
     # Only the morning cron (or manual dispatch) runs the full engine.
-    # The evening cron (${{ github.event.schedule }}) runs only lineups + props.
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * *'
 
     steps:
@@ -51,12 +51,21 @@ jobs:
         run: |
           python -m src.models.grade_mlb_results
 
-  refresh-lineups-and-props:
+      - name: Compute CLV per graded pick and update track record
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.models.build_mlb_clv
+
+  refresh-batter-props:
     runs-on: ubuntu-latest
-    # Evening-only: sync confirmed lineups then regenerate player props.
-    # Odds from the morning run are still in mlb_player_prop_odds (not re-purged here).
-    # This is the step that actually produces batter H+R+RBI props.
-    if: github.event.schedule == '0 21 * * *'
+    # Hourly runs: sync confirmed lineups then generate batter props for games
+    # starting in the next 2 hours.  Pitcher props (from the morning run) are
+    # not touched.  Runs 14:00–03:00 UTC to cover the full ET game slate.
+    if: >
+      github.event.schedule == '0 14-23 * * *' ||
+      github.event.schedule == '0 0-3 * * *'
 
     steps:
       - name: Checkout repo
@@ -67,20 +76,36 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install requirements
         run: |
           pip install -r requirements.txt
 
-      - name: Sync confirmed batting lineups
+      - name: Snapshot closing odds for CLV tracking (bulk call only, 1 API credit)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          python -m src.ingestion.snap_mlb_odds_closing
+
+      - name: Sync confirmed batting lineups (2-hour window)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python -m src.ingestion.sync_mlb_lineups
 
-      - name: Regenerate player props (pitcher + batter)
+      - name: Generate batter props for window games
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python -m src.models.generate_mlb_player_props
+          python -m src.models.generate_mlb_player_props --batter-only

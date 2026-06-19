@@ -19,7 +19,7 @@ Routing:
 
 Both tables are purged at the start of each run (same pattern as before).
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -122,6 +122,40 @@ def _save_bookmakers(bookmakers, home, away, game_id):
     return saved
 
 
+def _collect_snapshot_rows(bookmakers, home, away, game_id, event_id, commence_time, captured_at):
+    """Collect game-market rows for the opening snapshot table.
+
+    Props (PROP_MARKET_KEYS) are excluded — no clean 2-sided de-vig available.
+    """
+    rows = []
+    for bookmaker in bookmakers:
+        book = bookmaker.get("title")
+        for market in bookmaker.get("markets", []):
+            market_key = market.get("key")
+            if market_key in PROP_MARKET_KEYS:
+                continue
+            for outcome in market.get("outcomes", []):
+                price = outcome.get("price")
+                if not price:
+                    continue
+                rows.append({
+                    "odds_api_event_id": event_id,
+                    "game_id": game_id,
+                    "home_team_name": home,
+                    "away_team_name": away,
+                    "market": market_key,
+                    "selection": outcome.get("name"),
+                    "line": outcome.get("point"),
+                    "bookmaker": book,
+                    "odds_decimal": price,
+                    "odds_american": _decimal_to_american(price),
+                    "implied_probability": round(1.0 / price * 100, 2) if price else None,
+                    "commence_time": commence_time,
+                    "captured_at": captured_at,
+                })
+    return rows
+
+
 def main():
     # Purge stale rows before refreshing (no unique constraint on either table).
     supabase.table("mlb_odds").delete().eq("sport_key", "baseball_mlb").execute()
@@ -149,6 +183,9 @@ def main():
 
     events = resp.json()
     saved = 0
+    # Single captured_at for all snapshot rows in this run.
+    captured_at = datetime.now(timezone.utc).isoformat()
+    opening_snapshot_rows = []
 
     unmatched_games = []
     for event in events:
@@ -159,6 +196,12 @@ def main():
         if not game_id:
             unmatched_games.append(f"{away} @ {home} ({event_date})")
         saved += _save_bookmakers(event.get("bookmakers", []), home, away, game_id)
+        # Collect opening snapshot rows for h2h/totals/spreads.
+        opening_snapshot_rows.extend(_collect_snapshot_rows(
+            event.get("bookmakers", []),
+            home, away, game_id,
+            event.get("id"), event.get("commence_time"), captured_at,
+        ))
 
     print(f"  Main-market rows saved: {saved}")
     if unmatched_games:
@@ -229,6 +272,13 @@ def main():
                 game_bookmakers.append({**bookmaker, "markets": game_markets})
 
         alt_saved += _save_bookmakers(game_bookmakers, home, away, game_id)
+        # Collect opening snapshot rows for alternate_totals/alternate_spreads.
+        opening_snapshot_rows.extend(_collect_snapshot_rows(
+            game_bookmakers,
+            home, away, game_id,
+            event_id, event.get("commence_time"), captured_at,
+        ))
+
         if prop_rows:
             supabase.table("mlb_player_prop_odds").insert(prop_rows).execute()
             prop_saved += len(prop_rows)
@@ -236,6 +286,13 @@ def main():
     print(f"  Alternate-market rows saved: {alt_saved}")
     print(f"  Player prop odds rows saved: {prop_saved}")
     print(f"  Total API calls this run: 1 bulk + {len(events)} per-event = {1 + len(events)}")
+
+    # Write opening snapshot (append-only; never purged).
+    if opening_snapshot_rows:
+        for i in range(0, len(opening_snapshot_rows), 500):
+            supabase.table("mlb_odds_snapshots").insert(opening_snapshot_rows[i:i + 500]).execute()
+    print(f"  Opening snapshot: {len(opening_snapshot_rows)} rows → mlb_odds_snapshots")
+
     print(f"✅ MLB odds rows saved: {saved + alt_saved} game | {prop_saved} prop")
 
 

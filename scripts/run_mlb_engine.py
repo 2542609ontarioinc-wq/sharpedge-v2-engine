@@ -42,6 +42,12 @@ COMMANDS = [
 
     # 9. Backtest
     "python -m scripts.backtest_mlb_model",
+
+    # 10. CLV: compute closing-line value per graded pick, aggregate into track record.
+    #     Requires mlb_odds_snapshots to have both an opening (from stage 2) and at least
+    #     one hourly closing snapshot (from snap_mlb_odds_closing in the refresh job).
+    #     Picks with no closing snapshot are excluded from CLV stats, not counted as 0.
+    "python -m src.models.build_mlb_clv",
 ]
 
 
