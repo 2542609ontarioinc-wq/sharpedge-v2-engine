@@ -25,6 +25,7 @@ Edge flag:
 Tiers (across all props globally by calibrated confidence × quality score):
   Bet of the Day | Elite | Standard
 """
+import argparse
 import math
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -315,15 +316,62 @@ def _assign_tiers(rows):
             r["confidence_tier"] = "Standard"
 
 
+BATTER_PROP_WINDOW_HOURS = 2  # --batter-only mode: games starting within this window
+
+
+def _window_game_ids(now_utc, window_end_utc):
+    """Return (game_id list, game info list) for MLB games starting in [now_utc, window_end_utc]."""
+    games = (
+        supabase.table("games")
+        .select("id,home_team_name,away_team_name,start_time_utc")
+        .eq("sport_key", SPORT_KEY)
+        .gte("start_time_utc", now_utc.isoformat())
+        .lte("start_time_utc", window_end_utc.isoformat())
+        .execute()
+        .data
+    )
+    return [g["id"] for g in games], games
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--batter-only", action="store_true",
+        help="Only generate batter props for games starting in the next "
+             f"{BATTER_PROP_WINDOW_HOURS} hours. Pitcher props and global "
+             "delete are skipped — safe to run hourly alongside lineup sync.",
+    )
+    args = parser.parse_args()
+    batter_only = args.batter_only
+
     today = datetime.now(TORONTO).date()
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    window_end_utc = now_utc + timedelta(hours=BATTER_PROP_WINDOW_HOURS)
     window_end = (today + timedelta(days=3)).isoformat()
 
-    # Purge upcoming props before regenerating so stale rows from prior runs don't linger.
-    # Past game rows (game_date < today) are kept for grading.
-    supabase.table("mlb_player_props").delete().gte("game_date", today.isoformat()).execute()
+    if batter_only:
+        game_ids_in_window, window_games = _window_game_ids(now_utc, window_end_utc)
+        if not game_ids_in_window:
+            print("  No MLB games starting in the next "
+                  f"{BATTER_PROP_WINDOW_HOURS} hours — nothing to process.")
+            print("✅ MLB player props: 0 batter props (no games in window)")
+            return
+        print(f"  Batter-only mode: {len(game_ids_in_window)} game(s) in "
+              f"{BATTER_PROP_WINDOW_HOURS}h window")
+        for g in window_games:
+            start = (g.get("start_time_utc") or "")[:16]
+            print(f"    {g.get('away_team_name')} @ {g.get('home_team_name')} ~{start}Z")
+        # Delete only batter props for window games so pitcher props are untouched.
+        # This handles lineup scratches cleanly on re-runs.
+        supabase.table("mlb_player_props").delete().in_(
+            "game_id", game_ids_in_window
+        ).eq("player_type", "batter").execute()
+    else:
+        # Morning / full run: purge all upcoming props and regenerate from scratch.
+        # Past game rows (game_date < today) are kept for grading.
+        supabase.table("mlb_player_props").delete().gte("game_date", today.isoformat()).execute()
 
     prop_odds = supabase.table("mlb_player_prop_odds").select("*").execute().data
     # Only odds with a real game_id are usable (null means the game wasn't in our games table)
@@ -352,15 +400,21 @@ def main():
     except Exception:
         lineups = []
 
-    if not lineups:
+    # In batter-only mode, only process lineups for window games
+    if batter_only:
+        window_id_set = set(game_ids_in_window)
+        lineups = [l for l in lineups if l.get("game_id") in window_id_set]
+
+    if not lineups and not batter_only:
         print("  No lineup rows in mlb_lineups — batter props skipped.")
-        print("  Lineups post ~90 min before first pitch; re-run after ~5 PM ET to get batter props.")
 
     rows = []
     pitcher_skipped_no_odds = 0
 
     # ── Pitcher props ──────────────────────────────────────────────────────
-    for p in pitchers:
+    if batter_only:
+        print("  Pitcher props skipped (batter-only mode — pitchers handled by morning run)")
+    for p in pitchers if not batter_only else []:
         gs = int(p.get("games_started") or 0)
         pitcher_name = p.get("pitcher_name", "")
         if gs < MIN_STARTS:
@@ -407,6 +461,10 @@ def main():
         print(f"  Pitchers skipped (no market odds): {pitcher_skipped_no_odds} market-slots")
 
     # ── Batter props ───────────────────────────────────────────────────────
+    if batter_only and not lineups:
+        print("  No confirmed lineups for window games yet — batter props skipped "
+              "(lineups post ~60-90 min before first pitch; next hourly run will retry)")
+
     batter_skipped_no_odds = batter_skipped_low_gp = 0
     for batter in lineups:
         gp = int(batter.get("games_played") or 0)

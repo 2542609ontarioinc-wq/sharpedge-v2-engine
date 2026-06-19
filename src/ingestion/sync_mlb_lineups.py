@@ -1,7 +1,11 @@
 """
 Sync confirmed MLB batting lineups from the MLB Stats API.
 
-For each upcoming game (next 3 days):
+Time-gated: only processes games whose scheduled first pitch is within the
+next 2 hours AND has not yet started.  Run hourly to catch each game's
+lineup as it posts (~60-90 min before first pitch).
+
+For each game in the 2-hour window:
   1. Fetch schedule with hydrate=lineups,team — free, keyless MLB Stats API.
   2. Match games to Supabase game_ids by date + normalised team name.
   3. For each batter in the confirmed lineup (positions 1-9), fetch season
@@ -9,10 +13,8 @@ For each upcoming game (next 3 days):
   4. Compute avg_hrr_per_game = (H + R + RBI) / games_played.
   5. Upsert into mlb_lineups (on_conflict: game_id, side, batting_order).
 
-Lineup availability:
-  Lineups are typically posted ~60-90 min before first pitch.  When not yet
-  confirmed the schedule response has an empty homePlayers/awayPlayers array —
-  those games are skipped without error.
+Games already started or more than 2 hours away are logged and skipped.
+Games with no lineup yet are skipped without error (next hourly run retries).
 """
 import re
 import time
@@ -69,10 +71,17 @@ def _fetch_hitting_stats(player_id, season):
     return {}
 
 
+WINDOW_HOURS = 2  # only process games starting within this many hours
+
+
 def main():
     today = datetime.now(TORONTO).date()
     season = today.year
-    dates = [(today + timedelta(days=d)).isoformat() for d in range(4)]
+    # Fetch today + tomorrow to handle games near midnight ET
+    dates = [(today + timedelta(days=d)).isoformat() for d in range(2)]
+
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    window_close = now_utc + timedelta(hours=WINDOW_HOURS)
 
     # Build lookup: (norm_home, norm_away, date) → Supabase game uuid
     sb_games = (
@@ -80,7 +89,7 @@ def main():
         .select("id,game_date,home_team_name,away_team_name")
         .eq("sport_key", SPORT_KEY)
         .gte("game_date", today.isoformat())
-        .lte("game_date", (today + timedelta(days=3)).isoformat())
+        .lte("game_date", (today + timedelta(days=1)).isoformat())
         .execute()
         .data
     )
@@ -90,6 +99,7 @@ def main():
     }
 
     saved = matched = skipped_no_lineup = skipped_no_match = 0
+    skipped_started = skipped_outside_window = 0
 
     for date_str in dates:
         try:
@@ -107,6 +117,27 @@ def main():
                 home_name = teams.get("home", {}).get("team", {}).get("name", "")
                 away_name = teams.get("away", {}).get("team", {}).get("name", "")
 
+                # Time-gate: only process games starting in the next WINDOW_HOURS
+                game_date_iso = game.get("gameDate", "")
+                try:
+                    game_start_utc = datetime.fromisoformat(
+                        game_date_iso.replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    print(f"  ⚠ {date_str} {away_name} @ {home_name}: no gameDate in API response, skipping")
+                    continue
+
+                if game_start_utc < now_utc:
+                    print(
+                        f"  ⏭ {away_name} @ {home_name}: already started "
+                        f"({game_start_utc.astimezone(TORONTO).strftime('%I:%M %p ET')}), skipping"
+                    )
+                    skipped_started += 1
+                    continue
+                if game_start_utc > window_close:
+                    skipped_outside_window += 1
+                    continue
+
                 key = (_norm(home_name), _norm(away_name), date_str)
                 game_id = sb_lookup.get(key)
                 if not game_id:
@@ -121,6 +152,11 @@ def main():
 
                 if not home_players and not away_players:
                     skipped_no_lineup += 1
+                    print(
+                        f"  ⏳ {away_name} @ {home_name} "
+                        f"({game_start_utc.astimezone(TORONTO).strftime('%I:%M %p ET')}): "
+                        "lineup not yet posted"
+                    )
                     continue
 
                 for side, players, team_name in [
@@ -180,11 +216,10 @@ def main():
 
     print(
         f"\n✅ MLB lineups synced: {saved} batters | "
-        f"{matched} games matched | {skipped_no_lineup} pending lineup | "
+        f"{matched} games in window | {skipped_no_lineup} awaiting lineup | "
+        f"{skipped_started} already started | {skipped_outside_window} outside {WINDOW_HOURS}h window | "
         f"{skipped_no_match} not in game DB"
     )
-    if skipped_no_lineup > 0 and saved == 0 and matched > 0:
-        print("  ⚠ Lineups not yet posted — re-run after ~5 PM ET to get batter props")
     if skipped_no_match > 0:
         print(f"  ⚠ {skipped_no_match} MLB-API game(s) had no Supabase match — possible team-name mismatch")
 
