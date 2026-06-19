@@ -1,10 +1,14 @@
 """
-Compare poisson_v2 (starter-only blend) vs poisson_v3_bullpen (explicit starter/bullpen split).
+Compare poisson_v2, poisson_v3_bullpen, and poisson_v4_lineup.
 
-Joins mlb_run_predictions for both versions against finished games with actual scores.
+  v2          — starter-only pitcher blend, team-level offense
+  v3_bullpen  — explicit starter/bullpen innings split on defense
+  v4_lineup   — v3 defense + lineup-aware offense (confirmed batters × handedness splits)
+
+Joins mlb_run_predictions for all versions against finished games with actual scores.
 Prints per-version: MAE for xRuns, win-prediction accuracy, Brier score, and O/U accuracy.
 
-Run AFTER several weeks of data have accumulated in both versions:
+Run AFTER several weeks of data have accumulated:
     python -m scripts.compare_mlb_model_versions
 """
 import math
@@ -20,6 +24,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 V2 = "poisson_v2"
 V3 = "poisson_v3_bullpen"
+V4 = "poisson_v4_lineup"
+VERSIONS = [V2, V3, V4]
 SPORT_KEY = "baseball_mlb"
 FINISHED_STATUSES = {"FT", "AOT", "POST", "F", "FINAL", "GAME FINISHED"}
 
@@ -67,11 +73,11 @@ def main():
 
     print(f"Finished games with scores: {len(finished)}")
 
-    # Load predictions for both versions
+    # Load predictions for all versions
     preds = (
         supabase.table("mlb_run_predictions")
         .select("*")
-        .in_("model_version", [V2, V3])
+        .in_("model_version", VERSIONS)
         .execute()
         .data
     )
@@ -85,7 +91,7 @@ def main():
             by_version[ver][gid] = p
 
     results = {}
-    for ver in [V2, V3]:
+    for ver in VERSIONS:
         ver_preds = by_version.get(ver, {})
         if not ver_preds:
             print(f"\n{ver}: no predictions found — run the engine first.")
@@ -153,48 +159,56 @@ def main():
         print("No results to compare.")
         return
 
-    print("\n" + "=" * 65)
-    print(f"{'Metric':<30} {'poisson_v2':>15} {'v3_bullpen':>15}")
-    print("=" * 65)
+    COL = 13  # width of each version column
+    LABELS = {"poisson_v2": "v2", "poisson_v3_bullpen": "v3_bullpen", "poisson_v4_lineup": "v4_lineup"}
+    header_cols = "".join(f"{LABELS.get(v, v):>{COL}}" for v in VERSIONS)
+    sep = "=" * (32 + COL * len(VERSIONS))
+    print("\n" + sep)
+    print(f"{'Metric':<30}  {header_cols}")
+    print(sep)
 
-    def row(label, key, fmt=".3f"):
-        v2 = results.get(V2, {}).get(key)
-        v3 = results.get(V3, {}).get(key)
-        v2s = f"{v2:{fmt}}" if v2 is not None else "—"
-        v3s = f"{v3:{fmt}}" if v3 is not None else "—"
-        winner = ""
-        if v2 is not None and v3 is not None:
-            # Lower is better for MAE/Brier; higher is better for accuracy
-            if key in ("win_acc", "over85_acc"):
-                winner = " ← v3 better" if v3 > v2 else (" ← v2 better" if v2 > v3 else "")
-            else:
-                winner = " ← v3 better" if v3 < v2 else (" ← v2 better" if v2 < v3 else "")
-        print(f"  {label:<28} {v2s:>15} {v3s:>15}{winner}")
+    def _fmt(val, fmt):
+        return f"{val:{fmt}}" if val is not None else "—"
 
-    n2 = results.get(V2, {}).get("n", 0)
-    n3 = results.get(V3, {}).get("n", 0)
-    print(f"  {'Games matched':<28} {n2:>15} {n3:>15}")
+    def row(label, key, fmt=".3f", lower_better=True):
+        vals = [results.get(v, {}).get(key) for v in VERSIONS]
+        cells = "".join(f"{_fmt(v, fmt):>{COL}}" for v in vals)
+        # Mark the best version
+        actuals = [(v, i) for i, v in enumerate(vals) if v is not None]
+        best_mark = ""
+        if len(actuals) >= 2:
+            best_i = min(actuals, key=lambda x: x[0] if lower_better else -x[0])[1]
+            best_mark = f"  ← {LABELS.get(VERSIONS[best_i], VERSIONS[best_i])} best"
+        print(f"  {label:<28}  {cells}{best_mark}")
+
+    counts = "".join(f"{results.get(v, {}).get('n', 0):>{COL}}" for v in VERSIONS)
+    print(f"  {'Games matched':<28}  {counts}")
     row("MAE home xRuns (↓ better)", "mae_home_xr")
     row("MAE away xRuns (↓ better)", "mae_away_xr")
     row("MAE total xRuns (↓ better)", "mae_total_xr")
     row("Bias total (0 = perfect)", "bias_total")
-    row("Win accuracy (↑ better)", "win_acc", ".3f")
+    row("Win accuracy (↑ better)", "win_acc", ".3f", lower_better=False)
     row("Brier score (↓ better)", "brier", ".4f")
-    row("Over 8.5 accuracy (↑ better)", "over85_acc", ".3f")
-    print("=" * 65)
+    row("Over 8.5 accuracy (↑ better)", "over85_acc", ".3f", lower_better=False)
+    print(sep)
 
-    if V2 in results and V3 in results:
-        mae_v2 = results[V2]["mae_total_xr"]
-        mae_v3 = results[V3]["mae_total_xr"]
-        delta = mae_v2 - mae_v3
-        verdict = (
-            f"v3 IMPROVES MAE by {delta:.3f} runs/game — keep bullpen"
-            if delta > 0.02
-            else f"v2 BETTER or equivalent (MAE delta={delta:.3f}) — hold on bullpen"
-            if delta < -0.02
-            else f"WASH (MAE delta={delta:.3f}) — need more data"
-        )
-        print(f"\n  Verdict: {verdict}")
+    # Summary verdict: compare each shadow vs v2 on total MAE
+    n2 = results.get(V2, {}).get("n", 0)
+    mae_v2 = results.get(V2, {}).get("mae_total_xr")
+    if mae_v2 is not None:
+        print()
+        for ver, label in [(V3, "v3"), (V4, "v4")]:
+            if ver not in results:
+                continue
+            mae_ver = results[ver]["mae_total_xr"]
+            delta = mae_v2 - mae_ver
+            if delta > 0.02:
+                verdict = f"{label} IMPROVES MAE by {delta:.3f} runs/game"
+            elif delta < -0.02:
+                verdict = f"v2 BETTER (MAE delta={delta:.3f})"
+            else:
+                verdict = f"WASH (MAE delta={delta:.3f}) — need more data"
+            print(f"  v2 vs {label}: {verdict}")
         print(f"  (n={n2} game samples — aim for 200+ before deciding)")
 
 

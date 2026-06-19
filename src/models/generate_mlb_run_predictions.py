@@ -26,6 +26,7 @@ HOME_ADV = 1.04          # small home-field advantage in MLB
 FALLBACK_LEAGUE_AVG = 4.5
 MODEL_VERSION = "poisson_v2"
 MODEL_VERSION_BP = "poisson_v3_bullpen"
+MODEL_VERSION_LU = "poisson_v4_lineup"
 SPORT_KEY = "baseball_mlb"
 PITCHER_WEIGHT = 0.6     # blend: 60% starting pitcher RA9 / 40% team defense
 DEFAULT_STARTER_IP = 5.5  # historical MLB average IP/GS when starter data is missing
@@ -129,6 +130,114 @@ def build_pitcher_adjustments():
         .data
     )
     return {(r["game_id"], r["side"]): r for r in rows}
+
+
+def build_lineup_data(today):
+    """
+    Load today's batter split stats and pitcher handedness for the v4 lineup model.
+
+    Returns:
+      batter_splits  — dict (player_mlb_id, split) → shrunk_ops_index
+      game_lineups   — dict (game_id, side)        → list of player rows
+      pitcher_hands  — dict (game_id, side)        → 'L' | 'R' | None
+    """
+    # Batter splits (may be empty if sync_mlb_batter_stats hasn't run yet)
+    try:
+        brows = (
+            supabase.table("mlb_batter_strength")
+            .select("player_mlb_id,split,shrunk_ops_index")
+            .eq("game_date", today.isoformat())
+            .execute()
+            .data
+        )
+        batter_splits = {
+            (r["player_mlb_id"], r["split"]): float(r["shrunk_ops_index"])
+            for r in brows
+            if r.get("shrunk_ops_index") is not None
+        }
+    except Exception:
+        batter_splits = {}
+
+    # Confirmed lineups for today
+    try:
+        lrows = (
+            supabase.table("mlb_lineups")
+            .select("game_id,side,player_mlb_id,batting_order")
+            .eq("game_date", today.isoformat())
+            .execute()
+            .data
+        )
+        game_lineups = {}
+        for r in lrows:
+            game_lineups.setdefault((r["game_id"], r["side"]), []).append(r)
+    except Exception:
+        game_lineups = {}
+
+    # Pitcher handedness from mlb_pitchers (today + yesterday for double-headers)
+    try:
+        prows = (
+            supabase.table("mlb_pitchers")
+            .select("game_id,side,pitch_hand")
+            .gte("game_date", today.isoformat())
+            .execute()
+            .data
+        )
+        pitcher_hands = {(r["game_id"], r["side"]): r.get("pitch_hand") for r in prows}
+    except Exception:
+        pitcher_hands = {}
+
+    return batter_splits, game_lineups, pitcher_hands
+
+
+def _lineup_offense_factor(game_id, batting_side, pitcher_side,
+                            batter_splits, game_lineups, pitcher_hands):
+    """
+    Aggregate OPS index for `batting_side`'s confirmed lineup vs the opposing pitcher's
+    handedness.  Returns float (≈1.0 = league average) or None (fall back to team avg).
+
+    Requires: pitch_hand known, >= 5 batters with split data.
+    """
+    opp_hand = pitcher_hands.get((game_id, pitcher_side))
+    if not opp_hand or opp_hand == "S":
+        return None
+
+    batters = game_lineups.get((game_id, batting_side), [])
+    if not batters:
+        return None
+
+    split_key = "vL" if opp_hand == "L" else "vR"
+    indices = []
+    for b in batters:
+        pid = b.get("player_mlb_id")
+        if not pid:
+            continue
+        idx = batter_splits.get((pid, split_key))
+        if idx is not None:
+            indices.append(idx)
+
+    if len(indices) < 5:
+        return None  # too few batters confirmed; trust team average
+
+    return sum(indices) / len(indices)
+
+
+def compute_xr_v4(home_pitcher, away_pitcher, home_bp, away_bp,
+                  h_score, a_score, h_allow, a_allow, league_avg,
+                  home_off_factor=None, away_off_factor=None):
+    """
+    v4: v3 bullpen-aware defense + lineup-aware offense.
+
+    When lineup offense factors are available they replace the team-level scoring
+    indices (h_score / a_score) on the offense side only.  The defense side (starter
+    + bullpen split) is identical to compute_xr_v3.  Falls back to team average on
+    either side when lineup data is missing.
+    """
+    h_off = home_off_factor if home_off_factor is not None else h_score
+    a_off = away_off_factor if away_off_factor is not None else a_score
+    return compute_xr_v3(
+        home_pitcher, away_pitcher, home_bp, away_bp,
+        h_off, a_off, h_allow, a_allow, league_avg,
+    )
 
 
 def build_bullpen_strength():
@@ -244,9 +353,13 @@ def main():
     bullpens = build_bullpen_strength()
     has_bullpen = bool(bullpens)
 
+    batter_splits, game_lineups, pitcher_hands = build_lineup_data(today)
+    has_lineup = bool(batter_splits)
+
     seen = set()
     saved = 0
     saved_v3 = 0
+    saved_v4 = 0
 
     for g in games:
         gid = g["id"]
@@ -297,10 +410,12 @@ def main():
         ).execute()
         saved += 1
 
-        # --- v3 bullpen-adjusted prediction (stored separately, production unchanged) ---
+        # --- v3 + v4 shadow predictions (production v2 unchanged) ---
         if has_bullpen:
             home_bp = bullpens.get(home)
             away_bp = bullpens.get(away)
+
+            # v3: bullpen-aware defense, team-level offense
             home_xr_v3, away_xr_v3 = compute_xr_v3(
                 home_pitcher, away_pitcher, home_bp, away_bp,
                 h_score, a_score, h_allow, a_allow, league_avg,
@@ -323,6 +438,37 @@ def main():
             ).execute()
             saved_v3 += 1
 
+            # v4: v3 defense + lineup-aware offense (falls back to team avg when no lineup)
+            home_off = _lineup_offense_factor(
+                gid, "home", "away", batter_splits, game_lineups, pitcher_hands
+            )
+            away_off = _lineup_offense_factor(
+                gid, "away", "home", batter_splits, game_lineups, pitcher_hands
+            )
+            home_xr_v4, away_xr_v4 = compute_xr_v4(
+                home_pitcher, away_pitcher, home_bp, away_bp,
+                h_score, a_score, h_allow, a_allow, league_avg,
+                home_off_factor=home_off,
+                away_off_factor=away_off,
+            )
+            m_v4 = markets_from_matrix(
+                build_run_matrix(home_xr_v4, away_xr_v4), home_xr_v4, away_xr_v4
+            )
+            row_v4 = {
+                "game_id": gid,
+                "model_version": MODEL_VERSION_LU,
+                "home_team_name": home,
+                "away_team_name": away,
+                "expected_home_runs": round(home_xr_v4, 3),
+                "expected_away_runs": round(away_xr_v4, 3),
+                "expected_total_runs": round(home_xr_v4 + away_xr_v4, 3),
+                **m_v4,
+            }
+            supabase.table("mlb_run_predictions").upsert(
+                row_v4, on_conflict="game_id,model_version"
+            ).execute()
+            saved_v4 += 1
+
         h_data = "strength" if hs else "prior"
         a_data = "strength" if as_ else "prior"
         hp_label = f"{home_pitcher['pitcher_name']} idx={home_pitcher['shrunk_ra9_index']}" if home_pitcher else "TBD"
@@ -334,15 +480,30 @@ def main():
             h_bpidx = f"{h_bp['shrunk_ra9_index']}" if h_bp else "avg"
             a_bpidx = f"{a_bp['shrunk_ra9_index']}" if a_bp else "avg"
             bp_note = f" | BP idx: {home}={h_bpidx} {away}={a_bpidx}"
+        lu_note = ""
+        if has_lineup:
+            home_off_disp = _lineup_offense_factor(
+                gid, "home", "away", batter_splits, game_lineups, pitcher_hands
+            )
+            away_off_disp = _lineup_offense_factor(
+                gid, "away", "home", batter_splits, game_lineups, pitcher_hands
+            )
+            if home_off_disp is not None or away_off_disp is not None:
+                h_str = f"{home_off_disp:.3f}" if home_off_disp is not None else "avg"
+                a_str = f"{away_off_disp:.3f}" if away_off_disp is not None else "avg"
+                lu_note = f" | LU off: {home}={h_str} {away}={a_str}"
         print(
             f"{home} vs {away} | xR {home_xr:.2f}-{away_xr:.2f} | "
             f"ML {m['home_win_probability']}/{m['away_win_probability']} | "
             f"O8.5 {m['over_85_probability']} | RL h-1.5 {m['home_rl_minus15_prob']} "
             f"[{h_data}/{a_data}]\n"
-            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}"
+            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}"
         )
 
-    print(f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | {saved_v3} (v3 bullpen)")
+    print(
+        f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | "
+        f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup)"
+    )
 
 
 if __name__ == "__main__":

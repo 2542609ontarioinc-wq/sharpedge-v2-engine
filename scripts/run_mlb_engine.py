@@ -6,8 +6,9 @@ Stage order:
   2. Starting pitchers from MLB Stats API (free, keyless)
   2b. Bullpen strength from MLB Stats API (one extra call; feeds v3 comparison model)
   3. Batting lineups from MLB Stats API (when confirmed; skips if too early)
+  3b. Batter split stats + pitcher handedness (vL/vR; feeds v4 lineup shadow model)
   4. Team run-scoring/allowing strength
-  5. Poisson run model → writes poisson_v2 (production) AND poisson_v3_bullpen (shadow)
+  5. Poisson run model → writes poisson_v2 (production), v3_bullpen, v4_lineup (shadows)
   6. Game-level final picks: multi-market selection + honest calibration + Safe Zone
   7. Player prop predictions: pitcher K/Outs/ER/H/BB + batter H+R+RBI
   8. Grade settled game picks + prop picks
@@ -28,6 +29,9 @@ COMMANDS = [
 
     # 3. Batting lineups (skips gracefully if not yet confirmed)
     "python -m src.ingestion.sync_mlb_lineups",
+
+    # 3b. Batter split stats (vL/vR OPS) + pitcher handedness for v4 lineup shadow model
+    "python -m src.ingestion.sync_mlb_batter_stats",
 
     # 4. Team strength
     "python -m src.features.build_mlb_team_strength",
