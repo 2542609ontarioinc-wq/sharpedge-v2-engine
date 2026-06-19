@@ -39,14 +39,23 @@ COMMANDS = [
     # 5. Poisson run model (writes v2 production + v3 bullpen shadow for comparison)
     "python -m src.models.generate_mlb_run_predictions",
 
-    # 6. Game-level picks: moneyline / totals / run-line + Safe Zone
+    # 6. Game-level picks: moneyline / totals / run-line + Safe Zone (v2 production only)
     "python -m src.models.build_mlb_final_picks",
+
+    # 6b. Per-model picks for all versions (v2–v7) — shadow/comparison only
+    "python -m src.models.build_mlb_model_picks",
 
     # 7. Player props: pitcher K/Outs (solid) + ER/H/BB (noisier) + batter H+R+RBI
     "python -m src.models.generate_mlb_player_props",
 
     # 8. Grade settled picks (game + props)
     "python -m src.models.grade_mlb_results",
+
+    # 8b. Grade per-model picks (v2–v7 shadow comparison)
+    "python -m src.grading.grade_mlb_model_picks",
+
+    # 8c. Compute per-model analytics (MAE primary, win-rate/ROI secondary)
+    "python -m src.analytics.build_mlb_model_analytics",
 
     # 9. Backtest
     "python -m scripts.backtest_mlb_model",

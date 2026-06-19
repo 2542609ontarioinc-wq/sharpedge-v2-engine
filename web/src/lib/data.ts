@@ -3,6 +3,8 @@ import type {
   GradedPick,
   MarketStats,
   MLBMarketStats,
+  MLBModelLabGame,
+  MLBModelVersionData,
   MLBPlayerProp,
   MLBSafeZonePick,
   MLBSharpPick,
@@ -550,6 +552,104 @@ async function fetchMLBGamesWithTeams(gameIds: string[]): Promise<Map<string, ML
   if (error) throw error;
   for (const row of data ?? []) map.set(row.id, row as MLBGameWithTeams);
   return map;
+}
+
+// ─── MLB Model Lab ───────────────────────────────────────────────────────────
+
+type MLBRunPredictionRow = {
+  game_id: string;
+  model_version: string;
+  home_team_name: string;
+  away_team_name: string;
+  expected_home_runs: number | string | null;
+  expected_away_runs: number | string | null;
+  expected_total_runs: number | string | null;
+  home_win_probability: number | string | null;
+  away_win_probability: number | string | null;
+  over_85_probability: number | string | null;
+  under_85_probability: number | string | null;
+};
+
+export async function getMLBModelLab(): Promise<MLBModelLabGame[]> {
+  const today = todayTorontoISODate();
+
+  const { data: games, error: gamesError } = await supabase
+    .from("games")
+    .select("id, game_date, start_time_toronto, status")
+    .eq("sport_key", MLB_SPORT_KEY)
+    .gte("game_date", today);
+  if (gamesError) throw gamesError;
+  if (!games || games.length === 0) return [];
+
+  const gameIds = games.map((g) => g.id);
+  const gamesById = new Map(games.map((g) => [g.id, g as GameRow]));
+
+  const { data: rows, error } = await supabase
+    .from("mlb_run_predictions")
+    .select(
+      "game_id, model_version, home_team_name, away_team_name, expected_home_runs, expected_away_runs, expected_total_runs, home_win_probability, away_win_probability, over_85_probability, under_85_probability"
+    )
+    .in("game_id", gameIds);
+  if (error) throw error;
+  if (!rows || rows.length === 0) return [];
+
+  const byGame = new Map<string, MLBRunPredictionRow[]>();
+  for (const row of rows as MLBRunPredictionRow[]) {
+    const list = byGame.get(row.game_id) ?? [];
+    list.push(row);
+    byGame.set(row.game_id, list);
+  }
+
+  const result: MLBModelLabGame[] = [];
+
+  for (const [gameId, preds] of byGame.entries()) {
+    const game = gamesById.get(gameId);
+    if (!game) continue;
+
+    const models: Record<string, MLBModelVersionData> = {};
+    for (const pred of preds) {
+      models[pred.model_version] = {
+        version: pred.model_version,
+        expectedHomeRuns: toNumber(pred.expected_home_runs),
+        expectedAwayRuns: toNumber(pred.expected_away_runs),
+        expectedTotalRuns: toNumber(pred.expected_total_runs),
+        homeWinProb: toNumber(pred.home_win_probability),
+        awayWinProb: toNumber(pred.away_win_probability),
+        over85Prob: toNumber(pred.over_85_probability),
+        under85Prob: toNumber(pred.under_85_probability),
+      };
+    }
+
+    const v2 = models["poisson_v2"];
+    const v2Total = v2?.expectedTotalRuns ?? null;
+    const v2Lean = v2?.over85Prob != null ? (v2.over85Prob > 50 ? "Over" : "Under") : null;
+    let hasDisagreement = false;
+    if (v2) {
+      for (const [ver, m] of Object.entries(models)) {
+        if (ver === "poisson_v2") continue;
+        const lean = m.over85Prob != null ? (m.over85Prob > 50 ? "Over" : "Under") : null;
+        const diff =
+          v2Total != null && m.expectedTotalRuns != null
+            ? Math.abs(m.expectedTotalRuns - v2Total)
+            : null;
+        if (lean !== null && lean !== v2Lean) { hasDisagreement = true; break; }
+        if (diff !== null && diff > 0.5) { hasDisagreement = true; break; }
+      }
+    }
+
+    const first = preds[0];
+    result.push({
+      gameId,
+      homeTeam: first.home_team_name,
+      awayTeam: first.away_team_name,
+      gameTime: game.start_time_toronto ?? null,
+      models,
+      hasDisagreement,
+    });
+  }
+
+  result.sort((a, b) => (a.gameTime ?? "").localeCompare(b.gameTime ?? ""));
+  return result;
 }
 
 export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {

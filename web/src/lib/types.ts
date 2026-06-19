@@ -129,3 +129,23 @@ export type MLBPlayerProp = {
   confidenceTier: string | null;
   gameTime: string | null;
 };
+
+export type MLBModelVersionData = {
+  version: string;
+  expectedHomeRuns: number | null;
+  expectedAwayRuns: number | null;
+  expectedTotalRuns: number | null;
+  homeWinProb: number | null;
+  awayWinProb: number | null;
+  over85Prob: number | null;
+  under85Prob: number | null;
+};
+
+export type MLBModelLabGame = {
+  gameId: string;
+  homeTeam: string;
+  awayTeam: string;
+  gameTime: string | null;
+  models: Record<string, MLBModelVersionData>;
+  hasDisagreement: boolean;
+};

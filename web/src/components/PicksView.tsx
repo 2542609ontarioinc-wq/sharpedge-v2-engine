@@ -1,17 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import type { MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
+import type { MLBModelLabGame, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
 import { SoccerGameGroupCard, MLBGameGroupCard } from "./GameGroupCard";
 import { SafeZoneCard } from "./SafeZoneCard";
 import { TrackRecordView } from "./TrackRecordView";
 import { MLBSafeZoneCard } from "./MLBSafeZoneCard";
 import { MLBTrackRecordView } from "./MLBTrackRecordView";
+import { MLBModelLabView } from "./MLBModelLabView";
 import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
 import { EmptyState } from "./EmptyState";
 
 type Sport = "soccer" | "mlb";
-type Tab = "sharp" | "safe" | "record" | "props";
+type Tab = "sharp" | "safe" | "record" | "props" | "lab";
 type TierFilter = "all" | "Bet of the Day" | "Elite" | "Standard";
 
 const TIER_FILTERS: { value: TierFilter; label: string }[] = [
@@ -43,6 +44,7 @@ export function PicksView({
   mlbSafeZone,
   mlbTrackRecord,
   mlbPlayerProps,
+  mlbModelLab,
 }: {
   sharpPicks: SharpPick[];
   safeZone: SafeZonePick[];
@@ -51,6 +53,7 @@ export function PicksView({
   mlbSafeZone: MLBSafeZonePick[];
   mlbTrackRecord: MLBTrackRecord;
   mlbPlayerProps: MLBPlayerProp[];
+  mlbModelLab: MLBModelLabGame[];
 }) {
   const [sport, setSport] = useState<Sport>("soccer");
   const [tab, setTab] = useState<Tab>("sharp");
@@ -125,6 +128,14 @@ export function PicksView({
           <TabButton active={tab === "props"} onClick={() => setTab("props")}>
             Player Props
             <span className="ml-1.5 text-xs opacity-70">{propsCount}</span>
+          </TabButton>
+        )}
+        {sport === "mlb" && (
+          <TabButton active={tab === "lab"} onClick={() => setTab("lab")}>
+            Model Lab
+            <span className="ml-1.5 rounded-sm bg-watch/20 px-1 py-px text-[9px] font-bold text-watch">
+              INTERNAL
+            </span>
           </TabButton>
         )}
         <TabButton active={tab === "record"} onClick={() => setTab("record")}>
@@ -234,6 +245,8 @@ export function PicksView({
             subtitle="Pitcher K/Outs, ER, H, BB and batter H+R+RBI props will appear here once the engine runs and market odds are available."
           />
         )
+      ) : tab === "lab" ? (
+        <MLBModelLabView games={mlbModelLab} />
       ) : (
         <MLBTrackRecordView trackRecord={mlbTrackRecord} />
       )}

@@ -1,6 +1,7 @@
 import { Header } from "@/components/Header";
 import { PicksView } from "@/components/PicksView";
 import {
+  getMLBModelLab,
   getMLBPlayerProps,
   getMLBSafeZone,
   getMLBSharpPicks,
@@ -21,6 +22,7 @@ export default async function Home() {
     mlbSafeZone,
     mlbTrackRecord,
     mlbPlayerProps,
+    mlbModelLab,
   ] = await Promise.all([
     getSharpPicks(),
     getSafeZone(),
@@ -29,6 +31,7 @@ export default async function Home() {
     getMLBSafeZone(),
     getMLBTrackRecord(),
     getMLBPlayerProps(),
+    getMLBModelLab(),
   ]);
 
   return (
@@ -43,6 +46,7 @@ export default async function Home() {
           mlbSafeZone={mlbSafeZone}
           mlbTrackRecord={mlbTrackRecord}
           mlbPlayerProps={mlbPlayerProps}
+          mlbModelLab={mlbModelLab}
         />
       </main>
     </div>
