@@ -163,18 +163,11 @@ def main():
                     ("home", home_players, home_name),
                     ("away", away_players, away_name),
                 ]:
-                    # battingOrder from MLB API is encoded as int × 100
-                    batters = sorted(players, key=lambda p: int(p.get("battingOrder") or 0))
-
-                    for slot_raw in batters:
-                        raw_order = int(slot_raw.get("battingOrder") or 0)
-                        order = raw_order // 100 if raw_order >= 100 else raw_order
-                        if order < 1 or order > 9:
-                            continue
-
-                        person = slot_raw.get("person") or {}
-                        player_id = person.get("id")
-                        player_name = person.get("fullName", "Unknown")
+                    # Schedule endpoint returns players in batting order with no
+                    # battingOrder field — use list position (verified vs boxscore).
+                    for order, slot_raw in enumerate(players[:9], start=1):
+                        player_id = slot_raw.get("id")
+                        player_name = slot_raw.get("fullName", "Unknown")
 
                         try:
                             stats = _fetch_hitting_stats(player_id, season)

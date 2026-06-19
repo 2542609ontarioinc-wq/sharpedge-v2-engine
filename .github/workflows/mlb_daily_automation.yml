@@ -1,6 +1,13 @@
 name: SharpEdge MLB Daily Automation
 
 on:
+  # External hourly trigger (more reliable than GitHub's scheduler).
+  # Set up cron-job.org (free) to POST every hour during game time:
+  #   URL: https://api.github.com/repos/OWNER/REPO/dispatches
+  #   Method: POST  Auth: Bearer <PAT with actions:write>
+  #   Body: {"event_type": "hourly-mlb-refresh"}
+  repository_dispatch:
+    types: [hourly-mlb-refresh]
   schedule:
     # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — morning full-engine run
     - cron: "0 8 * * *"
@@ -63,7 +70,10 @@ jobs:
     # Hourly runs: sync confirmed lineups then generate batter props for games
     # starting in the next 2 hours.  Pitcher props (from the morning run) are
     # not touched.  Runs 14:00–03:00 UTC to cover the full ET game slate.
+    # repository_dispatch (from cron-job.org) is the primary trigger; GitHub
+    # schedule crons are kept as fallback in case dispatch is missed.
     if: >
+      github.event_name == 'repository_dispatch' ||
       github.event.schedule == '0 14-23 * * *' ||
       github.event.schedule == '0 0-3 * * *'
 
