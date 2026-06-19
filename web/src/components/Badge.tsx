@@ -1,6 +1,7 @@
-type BadgeVariant = "elite" | "accent" | "watch" | "reject" | "muted";
+type BadgeVariant = "elite" | "accent" | "watch" | "reject" | "muted" | "betd";
 
 const VARIANT_CLASSES: Record<BadgeVariant, string> = {
+  betd: "bg-watch/20 text-watch border-watch/50 ring-1 ring-watch/30",
   elite: "bg-elite/15 text-elite border-elite/30",
   accent: "bg-accent-2/15 text-accent-2 border-accent-2/30",
   watch: "bg-watch/15 text-watch border-watch/30",
@@ -32,6 +33,17 @@ export function tierVariant(tier: string | null): BadgeVariant {
       return "accent";
     case "Playable Value":
       return "watch";
+    default:
+      return "muted";
+  }
+}
+
+export function confidenceTierVariant(tier: string | null): BadgeVariant {
+  switch (tier) {
+    case "Bet of the Day":
+      return "betd";
+    case "Elite":
+      return "elite";
     default:
       return "muted";
   }

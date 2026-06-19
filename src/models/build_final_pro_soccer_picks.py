@@ -7,6 +7,12 @@ from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 TORONTO = ZoneInfo("America/Toronto")
 
+TIER_BOD = "Bet of the Day"
+TIER_ELITE = "Elite"
+TIER_STANDARD = "Standard"
+# rank 1 = Bet of the Day; ranks 2–6 = Elite; rest = Standard
+ELITE_CUTOFF = 6
+
 
 def parse_game_datetime(game_row):
     candidates = [
@@ -65,6 +71,43 @@ def build_explanation(row):
     return " ".join(parts)
 
 
+def _num(v, d=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return d
+
+
+def _confidence_sort_key(out_row, pred_map):
+    """Sort key: (calibrated_confidence, real_edge_or_0).
+    Edge only counts as tiebreaker when the prediction has real odds backing it."""
+    pred = pred_map.get(out_row["game_id"])
+    if not pred:
+        return (0.0, 0.0)
+    conf = _num(pred.get("confidence"))
+    edge = _num(pred.get("model_edge"))
+    # mirror apply_honest_calibration REAL band; edge is only a valid tiebreaker
+    # when the pick has odds and the edge is in the sane [-10, 15] range
+    has_real_odds = bool(
+        pred.get("bookmaker")
+        and pred.get("odds_decimal") is not None
+        and -10 <= edge <= 15
+    )
+    return (conf, edge if has_real_odds else 0.0)
+
+
+def _assign_confidence_tiers(all_out, pred_map):
+    """Sort all picks by calibrated confidence (+ real edge tiebreaker) and label tiers."""
+    all_out.sort(key=lambda r: _confidence_sort_key(r, pred_map), reverse=True)
+    for i, out in enumerate(all_out):
+        if i == 0:
+            out["confidence_tier"] = TIER_BOD
+        elif i < ELITE_CUTOFF:
+            out["confidence_tier"] = TIER_ELITE
+        else:
+            out["confidence_tier"] = TIER_STANDARD
+
+
 def main():
     rows = (
         supabase.table("soccer_calibrated_value")
@@ -83,7 +126,33 @@ def main():
         .data
     )
 
+    features = (
+        supabase.table("soccer_match_features")
+        .select("game_id,odds_decimal,bookmaker")
+        .execute()
+        .data
+    )
+
+    # Fetch calibrated predictions for confidence ranking
+    predictions = (
+        supabase.table("final_soccer_predictions")
+        .select("game_id,market,best_pick,confidence,model_edge,bookmaker,odds_decimal")
+        .execute()
+        .data
+    )
+
     game_map = {g["id"]: g for g in games}
+    features_map = {f["game_id"]: f for f in features}
+
+    # Build pred_map: game_id -> best prediction row for this pick.
+    # soccer_calibrated_value is one pick per game, so we keep the highest-confidence
+    # prediction per game as the confidence reference.
+    pred_map = {}
+    for p in predictions:
+        gid = p["game_id"]
+        existing = pred_map.get(gid)
+        if existing is None or _num(p.get("confidence")) > _num(existing.get("confidence")):
+            pred_map[gid] = p
 
     today_toronto = datetime.now(TORONTO).date()
     today_iso = today_toronto.isoformat()
@@ -95,17 +164,20 @@ def main():
         "00000000-0000-0000-0000-000000000000",
     ).execute()
 
-    current_saved = 0
-    history_saved = 0
-    skipped_past = 0
-    skipped_no_date = 0
+    # --- Pass 1: build all out rows (no tier yet) ---
+    all_out = []
+    game_datetimes = {}  # game_id -> datetime | None
 
     for row in rows:
         game_id = row["game_id"]
         game_row = game_map.get(game_id, {})
 
         game_dt = parse_game_datetime(game_row)
+        game_datetimes[game_id] = game_dt
         game_date = game_dt.date().isoformat() if game_dt else None
+
+        feat = features_map.get(game_id, {})
+        odds_decimal = feat.get("odds_decimal")
 
         out = {
             "game_id": game_id,
@@ -123,7 +195,24 @@ def main():
             "explanation": build_explanation(row),
             "game_date": game_date,
             "pick_run_date": today_iso,
+            "odds_decimal": odds_decimal,
+            "no_odds": odds_decimal is None,
+            "confidence_tier": TIER_STANDARD,  # default; overwritten below
         }
+        all_out.append(out)
+
+    # --- Pass 2: assign confidence tiers across the full slate ---
+    _assign_confidence_tiers(all_out, pred_map)
+
+    # --- Pass 3: upsert ---
+    current_saved = 0
+    history_saved = 0
+    skipped_past = 0
+    skipped_no_date = 0
+
+    for out in all_out:
+        game_id = out["game_id"]
+        game_dt = game_datetimes[game_id]
 
         # Always save to history for analytics.
         supabase.table("final_pro_soccer_pick_history").upsert(
@@ -156,4 +245,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

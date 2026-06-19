@@ -1,67 +1,123 @@
+import math
+from collections import defaultdict
+from statistics import mean
 from supabase import create_client
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+GLOBAL_AVG_CARDS_PER_TEAM = 2.0   # typical ~4 total per game
+SHRINK_K = 5
+HISTORY_WINDOW = 10
 
-def main():
-    games = (
-        supabase.table("games")
-        .select("id, home_team_name, away_team_name, raw_json")
-        .eq("sport_key", "soccer")
-        .in_("league_key", ["1", "479"])
-        .limit(100)
+
+def safe(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def poisson_pmf(k, lam):
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+
+def poisson_over(line, lam):
+    """P(X > line) for integer-valued Poisson(lam)."""
+    k_max = int(math.floor(line))
+    p_under = sum(poisson_pmf(k, lam) for k in range(k_max + 1))
+    return max(0.0, min(1.0, 1.0 - p_under))
+
+
+def shrink(raw_pct):
+    """Honest shrink toward 50: reduces overconfidence in uncalibrated markets."""
+    return 50.0 + (raw_pct - 50.0) * 0.75
+
+
+def build_team_card_rates():
+    rows = (
+        supabase.table("soccer_team_stat_history")
+        .select("team_name, game_date, yellow_cards, red_cards")
+        .order("game_date", desc=True)
+        .limit(20000)
         .execute()
         .data
     )
 
+    by_team = defaultdict(list)
+    for r in rows:
+        by_team[r["team_name"]].append(r)
+
+    rates = {}
+    for team, matches in by_team.items():
+        recent = sorted(matches, key=lambda x: x.get("game_date") or "", reverse=True)[:HISTORY_WINDOW]
+        n = len(recent)
+        cards_per_game = [safe(m.get("yellow_cards")) + safe(m.get("red_cards")) for m in recent]
+        team_avg = mean(cards_per_game) if cards_per_game else GLOBAL_AVG_CARDS_PER_TEAM
+        w = n / (n + SHRINK_K)
+        rate = w * team_avg + (1 - w) * GLOBAL_AVG_CARDS_PER_TEAM
+        rates[team] = {"rate": round(max(0.5, rate), 3), "games": n}
+    return rates
+
+
+def main():
+    rates = build_team_card_rates()
+    print(f"Team card rates estimated: {len(rates)}")
+
+    games = (
+        supabase.table("soccer_match_strength")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(200)
+        .execute()
+        .data
+    )
+
+    seen = set()
     saved = 0
 
-    for game in games:
-        raw = game.get("raw_json") or {}
-        enriched = raw.get("enriched_details") or {}
-        events = enriched.get("events", {}).get("response", [])
+    for g in games:
+        gid = g["game_id"]
+        if gid in seen:
+            continue
+        seen.add(gid)
 
-        yellow_cards = 0
-        red_cards = 0
+        home = g["home_team_name"]
+        away = g["away_team_name"]
+        hr = rates.get(home, {"rate": GLOBAL_AVG_CARDS_PER_TEAM})["rate"]
+        ar = rates.get(away, {"rate": GLOBAL_AVG_CARDS_PER_TEAM})["rate"]
+        total_lambda = hr + ar
 
-        for event in events:
-            if event.get("type") == "Card":
-                detail = event.get("detail", "")
-                if "Yellow" in detail:
-                    yellow_cards += 1
-                if "Red" in detail:
-                    red_cards += 1
-
-        expected_cards = max(3.5, yellow_cards + red_cards * 2)
-
-        over35 = 62 if expected_cards >= 4 else 48
-        over45 = 56 if expected_cards >= 5 else 38
-
-        if over35 >= 55:
-            pick = "Over 3.5 Cards"
-            conf = over35
-        else:
-            pick = "Pass"
-            conf = over35
+        over35 = round(shrink(poisson_over(3.5, total_lambda) * 100), 2)
+        over45 = round(shrink(poisson_over(4.5, total_lambda) * 100), 2)
+        over55 = round(shrink(poisson_over(5.5, total_lambda) * 100), 2)
 
         row = {
-            "game_id": game["id"],
-            "home_team_name": game["home_team_name"],
-            "away_team_name": game["away_team_name"],
-            "expected_cards": expected_cards,
+            "game_id": gid,
+            "model_version": "cards_v1",
+            "home_team_name": home,
+            "away_team_name": away,
+            "expected_home_cards": round(hr, 2),
+            "expected_away_cards": round(ar, 2),
+            "expected_total_cards": round(total_lambda, 2),
             "over_35_probability": over35,
             "over_45_probability": over45,
-            "cards_pick": pick,
-            "confidence": conf,
+            "over_55_probability": over55,
+            "under_35_probability": round(100.0 - over35, 2),
+            "pick_label": "PROJECTION",
         }
 
-        supabase.table("soccer_cards_predictions").insert(row).execute()
+        supabase.table("soccer_cards_prediction_versions").insert(row).execute()
         saved += 1
+        print(
+            f"{home} vs {away} | xCards H={hr:.1f} A={ar:.1f} Tot={total_lambda:.1f} | "
+            f"O3.5={over35:.1f}% O4.5={over45:.1f}% O5.5={over55:.1f}% [PROJECTION]"
+        )
 
-    print(f"✅ Cards predictions created: {saved}")
+    print(f"\n✅ Cards prediction rows saved: {saved}")
 
 
 if __name__ == "__main__":
     main()
-    

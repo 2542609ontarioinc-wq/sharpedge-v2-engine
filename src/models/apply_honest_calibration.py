@@ -28,6 +28,7 @@ def pick_line(pick):
 
 
 def novig_implied(game_id, market, pick):
+    """Return (novig_probability_pct, odds_decimal) or None if no matching odds."""
     rows = supabase.table("soccer_odds").select("*").eq("game_id", game_id).execute().data
 
     if market == "goals":
@@ -52,7 +53,8 @@ def novig_implied(game_id, market, pick):
                 if total <= 0:
                     continue
                 mine = p_over if side == "over" else p_under
-                return round((mine / total) * 100, 2)
+                pick_odds = num(sels[side]["odds_decimal"])
+                return (round((mine / total) * 100, 2), pick_odds)
         return None
 
     if market == "winner":
@@ -96,7 +98,7 @@ def novig_implied(game_id, market, pick):
                     continue
                 for sel, odds_val in by_sel.items():
                     if sel.lower() == pick_lower:
-                        return round((1.0 / odds_val / total) * 100, 2)
+                        return (round((1.0 / odds_val / total) * 100, 2), odds_val)
         return None
 
     return None
@@ -109,20 +111,27 @@ def main():
         raw_conf = num(r.get("confidence"))
         cal_conf = shrink(raw_conf)
         market = r.get("market")
-        novig = novig_implied(r["game_id"], market, r.get("best_pick"))
-        if novig is not None:
+        result = novig_implied(r["game_id"], market, r.get("best_pick"))
+        if result is not None:
+            novig, pick_odds = result
             edge = round(cal_conf - novig, 2)
             flag = "REAL" if -10 <= edge <= 15 else "suspect"
         else:
+            novig, pick_odds = None, None
             edge = None
             flag = "no-odds"
-        supabase.table("final_soccer_predictions").update({
+        update_payload = {
             "confidence": cal_conf,
             "model_edge": edge if edge is not None else r.get("model_edge"),
-        }).eq("id", r["id"]).execute()
+        }
+        if pick_odds is not None:
+            update_payload["odds_decimal"] = pick_odds
+        supabase.table("final_soccer_predictions").update(
+            update_payload
+        ).eq("id", r["id"]).execute()
         updated += 1
         print(f'{r["home_team_name"]} vs {r["away_team_name"]} | {r["best_pick"]} | '
-              f'conf {raw_conf}->{cal_conf}% | novig {novig}% | edge {edge}% [{flag}]')
+              f'conf {raw_conf}->{cal_conf}% | novig {novig}% | odds {pick_odds} | edge {edge}% [{flag}]')
     print(f"\n✅ Honest edges computed for {updated} picks.")
 
 

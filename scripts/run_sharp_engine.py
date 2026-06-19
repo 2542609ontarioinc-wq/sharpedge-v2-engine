@@ -35,6 +35,8 @@ COMMANDS = [
     "python -m src.models.generate_goals_predictions_v3_dixoncoles",
     "python -m src.models.generate_btts_predictions_v2",
     "python -m src.models.build_ensemble_predictions",
+    "python -m src.models.build_cards_model",
+    "python -m src.models.build_corners_model",
 
     # 5. Multi-market selection (Sharp + Safe Zone)
     "python -m src.models.build_final_predictions_multimarket",

@@ -11,7 +11,7 @@ export function Header() {
             Sharp<span className="text-accent">Edge</span>
           </span>
         </div>
-        <p className="hidden text-xs text-muted sm:block">Soccer probability engine</p>
+        <p className="hidden text-xs text-muted sm:block">Soccer · MLB probability engine</p>
       </div>
     </header>
   );

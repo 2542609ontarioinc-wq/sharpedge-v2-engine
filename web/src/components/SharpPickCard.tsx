@@ -1,14 +1,24 @@
 import type { SharpPick } from "@/lib/types";
 import { formatKickoff, formatPercent, formatSignedPercent } from "@/lib/format";
-import { Badge, tierVariant } from "./Badge";
+import { Badge, confidenceTierVariant } from "./Badge";
 import { ProbabilityBar } from "./ProbabilityBar";
 
 export function SharpPickCard({ pick }: { pick: SharpPick }) {
+  const isBOD = pick.confidenceTier === "Bet of the Day";
+
   return (
-    <div className="flex flex-col gap-4 rounded-2xl border border-border bg-surface p-5 backdrop-blur transition-colors hover:border-border-strong">
-      <div className="flex items-center justify-between">
+    <div
+      className={`flex flex-col gap-4 rounded-2xl border bg-surface p-5 backdrop-blur transition-colors hover:border-border-strong ${
+        isBOD ? "border-watch/40" : "border-border"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
         <Badge variant="muted">{pick.market}</Badge>
-        {pick.tier && <Badge variant={tierVariant(pick.tier)}>{pick.tier}</Badge>}
+        {pick.confidenceTier && (
+          <Badge variant={confidenceTierVariant(pick.confidenceTier)}>
+            {isBOD ? "★ " : ""}{pick.confidenceTier}
+          </Badge>
+        )}
       </div>
 
       <div>
@@ -38,6 +48,10 @@ export function SharpPickCard({ pick }: { pick: SharpPick }) {
           <Badge variant="elite">{formatSignedPercent(pick.edge)} edge</Badge>
         )}
       </div>
+
+      <p className="text-[10px] leading-snug text-muted/50">
+        Internal — tier is confidence-ranked, not proven to win more.
+      </p>
     </div>
   );
 }

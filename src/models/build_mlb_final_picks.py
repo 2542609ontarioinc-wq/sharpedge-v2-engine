@@ -16,6 +16,10 @@ Safe Zone rules:
 
 Honest: NEVER show a banker unless the model probability for that line is >= 80%.
         NEVER invent an edge where there are no real odds — flag 'no-odds' instead.
+
+Odds storage note: mlb_odds keeps distinct market keys for standard and alternate
+markets ("spreads" vs "alternate_spreads", "totals" vs "alternate_totals") so
+no-vig lookups can pair legs from the same logical bet without mixing them.
 """
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -30,6 +34,12 @@ SHRINK = 0.75
 SPORT_KEY = "baseball_mlb"
 MODEL_VERSION = "poisson_v2"
 BANKER_THRESHOLD = 80.0
+
+TIER_BOD = "Bet of the Day"
+TIER_ELITE = "Elite"
+TIER_STANDARD = "Standard"
+# rank 1 = Bet of the Day; ranks 2–6 = Elite; rest = Standard
+ELITE_CUTOFF = 6
 
 
 def _num(v, d=0.0):
@@ -136,9 +146,13 @@ def _novig_for_moneyline(odds_rows, pick_team):
 
 
 def _novig_for_totals(odds_rows, pick):
-    """Return (novig_pct, odds_decimal) for an Over/Under pick at the given line."""
+    """Return (novig_pct, odds_decimal) for an Over/Under pick at the given line.
+
+    Scans both 'totals' (standard) and 'alternate_totals' markets so that safe-zone
+    picks like 'Over 6.5' resolve against alternate-line prices when available.
+    Line filtering prevents cross-contamination between different total values.
+    """
     side = "over" if "over" in pick.lower() else "under"
-    # parse line from pick string e.g. "Over 8.5" -> 8.5
     line = None
     for tok in pick.split():
         try:
@@ -149,9 +163,10 @@ def _novig_for_totals(odds_rows, pick):
     if line is None:
         return None
 
+    TOTALS_MARKETS = ("totals", "alternate_totals")
     legs = [o for o in odds_rows
-            if (o.get("market") or "").lower() == "totals"
-            and _num(o.get("line")) == line]
+            if (o.get("market") or "").lower() in TOTALS_MARKETS
+            and abs(_num(o.get("line")) - line) < 0.01]
     by_book = {}
     for o in legs:
         by_book.setdefault(o.get("bookmaker"), []).append(o)
@@ -171,8 +186,13 @@ def _novig_for_totals(odds_rows, pick):
 
 
 def _novig_for_runline(odds_rows, pick):
-    """Return (novig_pct, odds_decimal) for a run-line pick e.g. 'Yankees -1.5'."""
-    # parse: last token is the line (e.g. '-1.5'), rest is team name
+    """Return (novig_pct, odds_decimal) for a run-line pick e.g. 'Yankees -1.5'.
+
+    Groups legs by (bookmaker, market_key, signed_line) so that the standard run-line
+    pair (home -1.5 / away +1.5 from 'spreads') and the alternate pair (home +1.5 /
+    away -1.5 from 'alternate_spreads') are never mixed in the same no-vig calculation.
+    This matters because a bookmaker can offer both in the same API response.
+    """
     parts = pick.rsplit(None, 1)
     if len(parts) != 2:
         return None
@@ -182,29 +202,46 @@ def _novig_for_runline(odds_rows, pick):
     except ValueError:
         return None
 
-    legs = [o for o in odds_rows
-            if (o.get("market") or "").lower() == "spreads"
-            and _num(o.get("line")) == line]
-    by_book = {}
-    for o in legs:
-        by_book.setdefault(o.get("bookmaker"), []).append(o)
-
     tname_lower = team_name.lower().strip()
-    for book, ol in by_book.items():
-        by_sel = {}
-        for o in ol:
-            sel = (o.get("selection") or "").strip().lower()
-            dec = _num(o.get("odds_decimal"))
-            if sel and dec > 1.0:
-                by_sel[sel] = (dec, o)
-        if len(by_sel) < 2:
+    pick_line = round(line, 2)
+    opp_line = round(-line, 2)
+
+    SPREAD_MARKETS = ("spreads", "alternate_spreads")
+    valid = [o for o in odds_rows
+             if (o.get("market") or "").lower() in SPREAD_MARKETS
+             and abs(abs(_num(o.get("line"))) - abs(line)) < 0.01]
+
+    # Key by (bookmaker, market_stored, signed_line) to isolate each bet leg
+    by_key = {}
+    for o in valid:
+        mkt = (o.get("market") or "").lower()
+        book = o.get("bookmaker")
+        signed = round(_num(o.get("line")), 2)
+        by_key.setdefault((book, mkt, signed), []).append(o)
+
+    seen_book_mkts = {(book, mkt) for (book, mkt, _) in by_key}
+    for book, mkt in seen_book_mkts:
+        our_legs = by_key.get((book, mkt, pick_line), [])
+        opp_legs = by_key.get((book, mkt, opp_line), [])
+        if not our_legs or not opp_legs:
             continue
-        total = sum(1.0 / d for d, _ in by_sel.values())
+        our_row = next(
+            (o for o in our_legs
+             if (o.get("selection") or "").lower().strip() == tname_lower),
+            None,
+        )
+        if not our_row:
+            continue
+        our_dec = _num(our_row.get("odds_decimal"))
+        if our_dec <= 1.0:
+            continue
+        opp_dec = max((_num(o.get("odds_decimal")) for o in opp_legs), default=0)
+        if opp_dec <= 1.0:
+            continue
+        total = (1.0 / our_dec) + (1.0 / opp_dec)
         if total <= 0:
             continue
-        if tname_lower in by_sel:
-            dec, _ = by_sel[tname_lower]
-            return (round((1.0 / dec / total) * 100, 2), dec)
+        return (round(((1.0 / our_dec) / total) * 100, 2), our_dec)
     return None
 
 
@@ -219,27 +256,57 @@ def _resolve_novig(odds_rows, market, pick):
 
 
 def _best_odds_decimal(odds_rows, market, pick):
-    """Return best (highest) decimal odds for this pick, or None."""
+    """Return best (highest) decimal odds for this specific pick + line, or None.
+
+    Line filtering is required for totals and spreads so that alternate-line rows
+    (e.g. Over 6.5) don't pollute lookups for a different line (e.g. Over 8.5).
+    Scans both standard and alternate market keys.
+    """
     matches = []
     pick_lower = pick.lower().strip()
+    TOTALS_MARKETS = ("totals", "alternate_totals")
+    SPREAD_MARKETS = ("spreads", "alternate_spreads")
+
     for o in odds_rows:
         mkt = (o.get("market") or "").lower()
         sel = (o.get("selection") or "").lower().strip()
         dec = _num(o.get("odds_decimal"))
         if dec <= 1.0:
             continue
+
         if market == "moneyline" and mkt == "h2h" and sel == pick_lower:
             matches.append((dec, o))
-        elif market == "totals" and mkt == "totals":
+
+        elif market == "totals" and mkt in TOTALS_MARKETS:
             side = "over" if "over" in pick_lower else "under"
-            if sel == side:
-                matches.append((dec, o))
-        elif market == "run_line" and mkt == "spreads":
+            if sel != side:
+                continue
+            pick_line = None
+            for tok in pick.split():
+                try:
+                    pick_line = float(tok)
+                    break
+                except ValueError:
+                    continue
+            if pick_line is not None and abs(_num(o.get("line")) - pick_line) > 0.01:
+                continue
+            matches.append((dec, o))
+
+        elif market == "run_line" and mkt in SPREAD_MARKETS:
             parts = pick.rsplit(None, 1)
-            if len(parts) == 2:
-                tname = parts[0].lower().strip()
-                if sel == tname:
-                    matches.append((dec, o))
+            if len(parts) != 2:
+                continue
+            tname = parts[0].lower().strip()
+            if sel != tname:
+                continue
+            try:
+                target_line = float(parts[1])
+                if abs(_num(o.get("line")) - target_line) > 0.01:
+                    continue
+            except ValueError:
+                pass
+            matches.append((dec, o))
+
     if not matches:
         return None, None
     best = max(matches, key=lambda x: x[0])
@@ -339,28 +406,67 @@ def _total_prob(pred, side, line):
     return _num(pred.get(mapping[nearest]))
 
 
-def _safe_odds(odds_rows, pick):
-    """Look up the best odds_decimal for a safe-zone pick (run-line or totals)."""
+def _sz_novig_and_odds(odds_rows, pick, raw_prob):
+    """Return (odds_decimal, novig_pct, edge, edge_flag) for a Safe Zone pick.
+
+    Uses calibrated (shrunk) probability so edge values are honest and consistent
+    with sharp-pick edge values.  When a complete 2-leg no-vig price exists the
+    flag is 'REAL' or 'suspect'; otherwise falls back to best raw decimal with
+    flag 'no-odds' and edge=None.
+    """
     if not pick:
-        return None
-    # Determine market type from the pick string
+        return None, None, None, "no-odds"
+
+    cal_prob = _shrink(raw_prob) if raw_prob else None
+
     if "+1.5" in pick or "+2.5" in pick or "-1.5" in pick:
-        mkt = "run_line"
+        novig_result = _novig_for_runline(odds_rows, pick)
+        fallback_mkt = "run_line"
+        fallback_pick = pick
     elif "over" in pick.lower() or "under" in pick.lower():
-        mkt = "totals"
+        novig_result = _novig_for_totals(odds_rows, pick)
+        fallback_mkt = "totals"
+        fallback_pick = pick
     elif "moneyline" in pick.lower():
         team = pick.replace("moneyline", "").strip()
-        dec, _ = _best_odds_decimal(odds_rows, "moneyline", team)
-        return dec
+        novig_result = _novig_for_moneyline(odds_rows, team)
+        fallback_mkt = "moneyline"
+        fallback_pick = team
     else:
-        return None
-    dec, _ = _best_odds_decimal(odds_rows, mkt, pick)
-    return dec
+        return None, None, None, "no-odds"
+
+    if novig_result and cal_prob is not None:
+        novig_pct, odds_dec = novig_result
+        edge = round(cal_prob - novig_pct, 2)
+        flag = "REAL" if -10 <= edge <= 15 else "suspect"
+        return odds_dec, novig_pct, edge, flag
+
+    # Fallback: best available raw price; no edge computable
+    odds_dec, _ = _best_odds_decimal(odds_rows, fallback_mkt, fallback_pick)
+    return odds_dec, None, None, "no-odds"
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _assign_confidence_tiers(fp_rows):
+    """Sort fp_rows by calibrated confidence (real edge as tiebreaker) and label tiers in-place."""
+    def _key(r):
+        conf = _num(r.get("calibrated_confidence"))
+        edge = _num(r.get("model_edge"))
+        is_real = r.get("edge_flag") == "REAL"
+        return (conf, edge if is_real else 0.0)
+
+    fp_rows.sort(key=_key, reverse=True)
+    for i, r in enumerate(fp_rows):
+        if i == 0:
+            r["confidence_tier"] = TIER_BOD
+        elif i < ELITE_CUTOFF:
+            r["confidence_tier"] = TIER_ELITE
+        else:
+            r["confidence_tier"] = TIER_STANDARD
+
 
 def main():
     preds = (
@@ -374,7 +480,11 @@ def main():
     )
 
     seen = set()
-    saved_fp = saved_sz = skipped = 0
+    skipped = 0
+
+    # --- Pass 1: collect all rows ---
+    fp_rows = []
+    sz_by_game = {}
 
     for pred in preds:
         gid = pred.get("game_id")
@@ -417,8 +527,7 @@ def main():
         else:
             novig_pct = pick_odds = edge = None
             flag = "no-odds"
-            book_odds, best_book = _best_odds_decimal(odds_rows, best["market"], best["pick"])
-            book_odds = book_odds
+            book_odds, _ = _best_odds_decimal(odds_rows, best["market"], best["pick"])
 
         # American odds
         am_odds = None
@@ -428,7 +537,6 @@ def main():
             else:
                 am_odds = int(-100 / (book_odds - 1))
 
-        # Upsert final prediction
         fp_row = {
             "game_id": gid,
             "home_team_name": home,
@@ -447,18 +555,27 @@ def main():
             "secondary_market": second["market"] if second else None,
             "secondary_confidence": sec_cal,
             "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "confidence_tier": TIER_STANDARD,  # overwritten in pass 2
         }
-        supabase.table("mlb_final_predictions").upsert(fp_row, on_conflict="game_id").execute()
-        saved_fp += 1
+        fp_rows.append(fp_row)
 
-        # Build Safe Zone
+        # Build Safe Zone (stored separately, not tier-ranked)
         bal_pick, bal_prob, bnk_pick, bnk_prob = _safe_zone_picks(
             best["market"], best["pick"], pred, home, away
         )
-        bal_odds = _safe_odds(odds_rows, bal_pick)
-        bnk_odds = _safe_odds(odds_rows, bnk_pick) if bnk_pick else None
 
-        sz_row = {
+        bal_odds, bal_novig, bal_edge, bal_flag = _sz_novig_and_odds(
+            odds_rows, bal_pick, bal_prob
+        )
+        if bnk_pick:
+            bnk_odds, bnk_novig, bnk_edge, bnk_flag = _sz_novig_and_odds(
+                odds_rows, bnk_pick, bnk_prob
+            )
+        else:
+            bnk_odds = bnk_novig = bnk_edge = None
+            bnk_flag = "no-odds"
+
+        sz_by_game[gid] = {
             "game_id": gid,
             "home_team_name": home,
             "away_team_name": away,
@@ -468,20 +585,42 @@ def main():
             "balanced_pick": bal_pick,
             "balanced_prob": round(bal_prob, 2) if bal_prob is not None else None,
             "balanced_odds_decimal": bal_odds,
+            "balanced_novig_pct": bal_novig,
+            "balanced_edge": bal_edge,
+            "balanced_edge_flag": bal_flag,
             "banker_pick": bnk_pick,
             "banker_prob": round(bnk_prob, 2) if bnk_prob is not None else None,
             "banker_odds_decimal": bnk_odds,
+            "banker_novig_pct": bnk_novig,
+            "banker_edge": bnk_edge,
+            "banker_edge_flag": bnk_flag,
             "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
         }
-        supabase.table("mlb_safe_zone").upsert(sz_row, on_conflict="game_id").execute()
-        saved_sz += 1
 
-        sz_label = f"BANKER={bnk_pick}" if bnk_pick else f"balanced={bal_pick}"
+    # --- Pass 2: assign confidence tiers ---
+    _assign_confidence_tiers(fp_rows)
+
+    # --- Pass 3: upsert ---
+    saved_fp = saved_sz = 0
+    for fp_row in fp_rows:
+        gid = fp_row["game_id"]
+        sz = sz_by_game[gid]
+        sz_label = (
+            f"BANKER={sz['banker_pick']} [{sz.get('banker_edge_flag')}]"
+            if sz.get("banker_pick")
+            else f"balanced={sz.get('balanced_pick')} [{sz.get('balanced_edge_flag')}]"
+        )
         print(
-            f"{home} vs {away} | SHARP: {best['pick']} ({best['market']}) "
-            f"raw={best['raw_confidence']}% cal={cal_conf}% edge={edge}% [{flag}] | "
+            f"[{fp_row['confidence_tier']}] {fp_row['home_team_name']} vs {fp_row['away_team_name']} | "
+            f"SHARP: {fp_row['best_pick']} ({fp_row['market']}) "
+            f"cal={fp_row['calibrated_confidence']}% edge={fp_row['model_edge']}% [{fp_row['edge_flag']}] | "
             f"SAFE: {sz_label}"
         )
+        supabase.table("mlb_final_predictions").upsert(fp_row, on_conflict="game_id").execute()
+        saved_fp += 1
+
+        supabase.table("mlb_safe_zone").upsert(sz_by_game[gid], on_conflict="game_id").execute()
+        saved_sz += 1
 
     print(f"\n✅ MLB final picks: {saved_fp} | Safe Zones: {saved_sz} | skipped: {skipped}")
 
