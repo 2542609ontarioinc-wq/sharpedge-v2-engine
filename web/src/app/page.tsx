@@ -1,6 +1,7 @@
 import { Header } from "@/components/Header";
 import { PicksView } from "@/components/PicksView";
 import {
+  getMLBPlayerProps,
   getMLBSafeZone,
   getMLBSharpPicks,
   getMLBTrackRecord,
@@ -12,15 +13,23 @@ import {
 export const revalidate = 30;
 
 export default async function Home() {
-  const [sharpPicks, safeZone, trackRecord, mlbSharpPicks, mlbSafeZone, mlbTrackRecord] =
-    await Promise.all([
-      getSharpPicks(),
-      getSafeZone(),
-      getTrackRecord(),
-      getMLBSharpPicks(),
-      getMLBSafeZone(),
-      getMLBTrackRecord(),
-    ]);
+  const [
+    sharpPicks,
+    safeZone,
+    trackRecord,
+    mlbSharpPicks,
+    mlbSafeZone,
+    mlbTrackRecord,
+    mlbPlayerProps,
+  ] = await Promise.all([
+    getSharpPicks(),
+    getSafeZone(),
+    getTrackRecord(),
+    getMLBSharpPicks(),
+    getMLBSafeZone(),
+    getMLBTrackRecord(),
+    getMLBPlayerProps(),
+  ]);
 
   return (
     <div className="min-h-screen">
@@ -33,6 +42,7 @@ export default async function Home() {
           mlbSharpPicks={mlbSharpPicks}
           mlbSafeZone={mlbSafeZone}
           mlbTrackRecord={mlbTrackRecord}
+          mlbPlayerProps={mlbPlayerProps}
         />
       </main>
     </div>

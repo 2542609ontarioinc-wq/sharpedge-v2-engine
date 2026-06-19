@@ -2,35 +2,45 @@
 MLB Sharp Engine — daily run script.
 
 Stage order:
-  1. Ingest games (upcoming + recent history for backtest)
-  2. Fetch odds from The Odds API
-  3. Build team run-scoring/allowing strength (shrunk Poisson indices)
-  4. Poisson run model → moneyline / totals / run-line probabilities
-  5. Final picks: multi-market selection + honest calibration + Safe Zone
-  6. Backtest on settled results (prints accuracy + saves to mlb_backtest_results)
-
-Props are a separate later module — this engine intentionally stops at game-level picks.
+  1. Ingest games + odds (alt markets and player props combined into per-event call)
+  2. Starting pitchers from MLB Stats API (free, keyless)
+  3. Batting lineups from MLB Stats API (when confirmed; skips if too early)
+  4. Team run-scoring/allowing strength
+  5. Poisson run model → moneyline / totals / run-line probabilities
+  6. Game-level final picks: multi-market selection + honest calibration + Safe Zone
+  7. Player prop predictions: pitcher K/Outs/ER/H/BB + batter H+R+RBI
+  8. Grade settled game picks + prop picks
+  9. Backtest on historical results
 """
 import subprocess
 
 COMMANDS = [
-    # 1. Ingest: games + odds
+    # 1. Ingest: games + odds (props fetched in same per-event call as alt markets)
     "python -m src.ingestion.sync_mlb_games",
     "python -m src.ingestion.sync_mlb_odds",
 
-    # 2. Starting pitchers from MLB Stats API (free, keyless) — must run after games sync
+    # 2. Starting pitchers from MLB Stats API
     "python -m src.ingestion.sync_mlb_pitchers",
 
-    # 3. Team strength (must run after game results are current)
+    # 3. Batting lineups (skips gracefully if not yet confirmed)
+    "python -m src.ingestion.sync_mlb_lineups",
+
+    # 4. Team strength
     "python -m src.features.build_mlb_team_strength",
 
-    # 3. Poisson predictions for today's slate
+    # 5. Poisson run model
     "python -m src.models.generate_mlb_run_predictions",
 
-    # 4. Multi-market selection + honest calibration + Safe Zone
+    # 6. Game-level picks: moneyline / totals / run-line + Safe Zone
     "python -m src.models.build_mlb_final_picks",
 
-    # 5. Backtest on historical results
+    # 7. Player props: pitcher K/Outs (solid) + ER/H/BB (noisier) + batter H+R+RBI
+    "python -m src.models.generate_mlb_player_props",
+
+    # 8. Grade settled picks (game + props)
+    "python -m src.models.grade_mlb_results",
+
+    # 9. Backtest
     "python -m scripts.backtest_mlb_model",
 ]
 

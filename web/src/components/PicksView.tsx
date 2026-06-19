@@ -1,16 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import type { MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
+import type { MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
 import { SoccerGameGroupCard, MLBGameGroupCard } from "./GameGroupCard";
 import { SafeZoneCard } from "./SafeZoneCard";
 import { TrackRecordView } from "./TrackRecordView";
 import { MLBSafeZoneCard } from "./MLBSafeZoneCard";
 import { MLBTrackRecordView } from "./MLBTrackRecordView";
+import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
 import { EmptyState } from "./EmptyState";
 
 type Sport = "soccer" | "mlb";
-type Tab = "sharp" | "safe" | "record";
+type Tab = "sharp" | "safe" | "record" | "props";
 type TierFilter = "all" | "Bet of the Day" | "Elite" | "Standard";
 
 const TIER_FILTERS: { value: TierFilter; label: string }[] = [
@@ -41,6 +42,7 @@ export function PicksView({
   mlbSharpPicks,
   mlbSafeZone,
   mlbTrackRecord,
+  mlbPlayerProps,
 }: {
   sharpPicks: SharpPick[];
   safeZone: SafeZonePick[];
@@ -48,6 +50,7 @@ export function PicksView({
   mlbSharpPicks: MLBSharpPick[];
   mlbSafeZone: MLBSafeZonePick[];
   mlbTrackRecord: MLBTrackRecord;
+  mlbPlayerProps: MLBPlayerProp[];
 }) {
   const [sport, setSport] = useState<Sport>("soccer");
   const [tab, setTab] = useState<Tab>("sharp");
@@ -64,12 +67,21 @@ export function PicksView({
     g.some((p) => matchesTier(p.confidenceTier))
   );
 
-  // Pick counts (for tab badge) — count individual picks matching the tier
+  // Pick counts (for tab badge)
   const sharpCount =
     sport === "soccer"
       ? sharpPicks.filter((p) => matchesTier(p.confidenceTier)).length
       : mlbSharpPicks.filter((p) => matchesTier(p.confidenceTier)).length;
   const safeCount = sport === "soccer" ? safeZone.length : mlbSafeZone.length;
+  const propsCount = mlbPlayerProps.length;
+
+  // Group player props by game for the Props tab
+  const propsByGame = mlbPlayerProps.reduce<Map<string, MLBPlayerProp[]>>((acc, p) => {
+    const list = acc.get(p.gameId) ?? [];
+    list.push(p);
+    acc.set(p.gameId, list);
+    return acc;
+  }, new Map());
 
   const showTierFilter = tab === "sharp";
 
@@ -109,6 +121,12 @@ export function PicksView({
           Safe Zone
           <span className="ml-1.5 text-xs opacity-70">{safeCount}</span>
         </TabButton>
+        {sport === "mlb" && (
+          <TabButton active={tab === "props"} onClick={() => setTab("props")}>
+            Player Props
+            <span className="ml-1.5 text-xs opacity-70">{propsCount}</span>
+          </TabButton>
+        )}
         <TabButton active={tab === "record"} onClick={() => setTab("record")}>
           Track Record
         </TabButton>
@@ -201,6 +219,19 @@ export function PicksView({
           <EmptyState
             title="No MLB safe zone coverage yet"
             subtitle="Balanced and banker run-line/total plays for today's games will appear here once the engine runs."
+          />
+        )
+      ) : tab === "props" ? (
+        propsByGame.size > 0 ? (
+          <div className="flex flex-col gap-3">
+            {[...propsByGame.entries()].map(([gameId, props]) => (
+              <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No player props yet"
+            subtitle="Pitcher K/Outs, ER, H, BB and batter H+R+RBI props will appear here once the engine runs and market odds are available."
           />
         )
       ) : (
