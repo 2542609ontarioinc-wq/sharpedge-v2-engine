@@ -11,8 +11,12 @@ MLB run totals are large enough that independence holds reasonably).
 
 Results written to mlb_run_predictions (upsert on game_id, model_version).
 """
+import csv
+import io
 import math
+import os
 import requests
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,9 +34,223 @@ MODEL_VERSION_BP = "poisson_v3_bullpen"
 MODEL_VERSION_LU = "poisson_v4_lineup"
 MODEL_VERSION_ENV = "poisson_v5_environment"
 MODEL_VERSION_FORM = "poisson_v6_form"
+MODEL_VERSION_SC = "poisson_v7_statcast"
 SPORT_KEY = "baseball_mlb"
 PITCHER_WEIGHT = 0.6     # blend: 60% starting pitcher RA9 / 40% team defense
 DEFAULT_STARTER_IP = 5.5  # historical MLB average IP/GS when starter data is missing
+
+# v7 Statcast constants (2024/2025 MLB league averages)
+LEAGUE_AVG_BARREL_PCT = 8.0    # league-average Barrel%
+LEAGUE_AVG_HARDHIT_PCT = 38.0  # league-average Hard-Hit%
+STATCAST_MAX_MULT = 0.05       # cap Statcast offense multiplier at ±5%
+SAVANT_MIN_PA = 200            # full weight at 200+ PA; linearly shrunk below
+_SAVANT_CACHE_FILE = "/tmp/sharpedge_savant_{year}.csv"
+
+# Baseball Savant abbreviations keyed by our team-name substring
+_SAVANT_TEAM_MAP = [
+    ("white sox",   "CWS"),
+    ("red sox",     "BOS"),
+    ("blue jays",   "TOR"),
+    ("diamondback", "ARI"),
+    ("braves",      "ATL"),
+    ("orioles",     "BAL"),
+    ("cubs",        "CHC"),
+    ("reds",        "CIN"),
+    ("guardians",   "CLE"),
+    ("rockies",     "COL"),
+    ("tigers",      "DET"),
+    ("astros",      "HOU"),
+    ("royals",      "KC"),
+    ("angels",      "LAA"),
+    ("dodgers",     "LAD"),
+    ("marlins",     "MIA"),
+    ("brewers",     "MIL"),
+    ("twins",       "MIN"),
+    ("mets",        "NYM"),
+    ("yankees",     "NYY"),
+    ("athletics",   "ATH"),   # Sacramento Athletics 2025+; also try OAK below
+    ("phillies",    "PHI"),
+    ("pirates",     "PIT"),
+    ("padres",      "SD"),
+    ("mariners",    "SEA"),
+    ("giants",      "SF"),
+    ("cardinals",   "STL"),
+    ("rays",        "TB"),
+    ("rangers",     "TEX"),
+    ("nationals",   "WSH"),
+]
+# Extra abbreviation aliases tried when primary lookup fails
+_SAVANT_ALIASES = {"ATH": ["OAK", "SAC"], "CWS": ["CHW"]}
+
+
+def _lookup_savant_abbr(team_name):
+    tn = (team_name or "").lower()
+    for kw, abbr in _SAVANT_TEAM_MAP:
+        if kw in tn:
+            return abbr
+    return None
+
+
+def _parse_savant_csv(text):
+    """
+    Parse Baseball Savant team-level statcast CSV.
+    Returns dict: abbr → {barrel_pct, hardhit_pct, pa}.
+    Tries multiple column-name variants to handle format changes.
+    """
+    BARREL_COLS = ["barrel_batted_rate", "brl_percent", "barrel_pct", "brl_pa", "barrel%"]
+    HARDHIT_COLS = ["hard_hit_percent", "hardhit_percent", "hard_hit_pct", "hardhit%"]
+    TEAM_COLS = ["last_name", "team_name_alt", "team_abbrev", "player_name", "team"]
+    PA_COLS = ["pa", "ab", "batted_balls", "attempts"]
+
+    reader = csv.DictReader(io.StringIO(text.strip()))
+    header = reader.fieldnames or []
+    hl = [c.lower().strip() for c in header]
+
+    def _pick(candidates):
+        for c in candidates:
+            if c in hl:
+                return header[hl.index(c)]
+        return None
+
+    barrel_col = _pick(BARREL_COLS)
+    hardhit_col = _pick(HARDHIT_COLS)
+    team_col = _pick(TEAM_COLS)
+    pa_col = _pick(PA_COLS)
+
+    if not barrel_col or not hardhit_col or not team_col:
+        return {}
+
+    result = {}
+    for row in reader:
+        abbr = (row.get(team_col) or "").strip().upper()
+        if not abbr:
+            continue
+        try:
+            barrel = float(row.get(barrel_col) or 0)
+            hardhit = float(row.get(hardhit_col) or 0)
+        except (TypeError, ValueError):
+            continue
+        pa = 0
+        if pa_col:
+            try:
+                pa = int(float(row.get(pa_col) or 0))
+            except (TypeError, ValueError):
+                pa = 999  # assume adequate sample if column missing
+        # Savant may store barrel as a decimal (0.08) rather than percent (8.0) —
+        # normalise: values < 1.0 are treated as fractions
+        if 0 < barrel < 1.0:
+            barrel *= 100
+        if 0 < hardhit < 1.0:
+            hardhit *= 100
+        result[abbr] = {"barrel_pct": barrel, "hardhit_pct": hardhit, "pa": pa}
+    return result
+
+
+def _fetch_savant_statcast(year):
+    """
+    Fetch team-level Barrel%/Hard-Hit% from Baseball Savant (free, no key).
+    Caches to /tmp for one day — data updates slowly mid-season.
+    Returns dict: abbr → {barrel_pct, hardhit_pct, pa}  or {} on any failure.
+    Falls back to stale cache rather than crashing.
+    """
+    cache_file = _SAVANT_CACHE_FILE.format(year=year)
+    today_str = datetime.now(ZoneInfo("America/Toronto")).date().isoformat()
+
+    # Use valid cache from today
+    if os.path.exists(cache_file):
+        try:
+            mtime_date = datetime.fromtimestamp(os.path.getmtime(cache_file)).date().isoformat()
+            if mtime_date == today_str:
+                with open(cache_file, encoding="utf-8") as f:
+                    parsed = _parse_savant_csv(f.read())
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+
+    url = (
+        f"https://baseballsavant.mlb.com/leaderboard/statcast"
+        f"?abs=0&type=batter-team&year={year}&position=&team=&min=0&csv=true"
+    )
+    try:
+        resp = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SharpEdge/2.0)"},
+        )
+        if resp.status_code == 200 and resp.text.strip():
+            parsed = _parse_savant_csv(resp.text)
+            if parsed:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    f.write(resp.text)
+                return parsed
+            print(f"  Savant CSV fetched but no usable columns found — skipping v7 Statcast")
+        else:
+            print(f"  Savant fetch returned HTTP {resp.status_code} — skipping v7 Statcast")
+    except Exception as e:
+        print(f"  Savant fetch failed: {e} — skipping v7 Statcast")
+
+    # Try stale cache as last resort
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, encoding="utf-8") as f:
+                parsed = _parse_savant_csv(f.read())
+            if parsed:
+                print(f"  Using stale Savant cache for v7")
+                return parsed
+        except Exception:
+            pass
+
+    return {}
+
+
+def _statcast_off_mult(team_name, savant_data):
+    """
+    Return a small offense multiplier for team_name based on Barrel% + Hard-Hit%.
+    Returns 1.0 (no adjustment) if team not found or sample too small.
+    Maximum adjustment: ±STATCAST_MAX_MULT (5%).
+    """
+    if not savant_data:
+        return 1.0
+    abbr = _lookup_savant_abbr(team_name)
+    if not abbr:
+        return 1.0
+    row = savant_data.get(abbr)
+    if row is None:
+        # try known aliases
+        for alias in _SAVANT_ALIASES.get(abbr, []):
+            row = savant_data.get(alias)
+            if row is not None:
+                break
+    if row is None:
+        return 1.0
+
+    barrel = row.get("barrel_pct", LEAGUE_AVG_BARREL_PCT)
+    hardhit = row.get("hardhit_pct", LEAGUE_AVG_HARDHIT_PCT)
+    pa = row.get("pa", SAVANT_MIN_PA)
+
+    # Relative to league average (1.0 = average)
+    barrel_rel = barrel / LEAGUE_AVG_BARREL_PCT if LEAGUE_AVG_BARREL_PCT > 0 else 1.0
+    hardhit_rel = hardhit / LEAGUE_AVG_HARDHIT_PCT if LEAGUE_AVG_HARDHIT_PCT > 0 else 1.0
+    combined_rel = (barrel_rel + hardhit_rel) / 2.0
+
+    # Scale: ±10% from league avg in Statcast → ±STATCAST_MAX_MULT in runs
+    raw_adj = (combined_rel - 1.0) * (STATCAST_MAX_MULT / 0.10)
+    clamped = max(-STATCAST_MAX_MULT, min(STATCAST_MAX_MULT, raw_adj))
+
+    # Shrink toward zero for small samples
+    sample_weight = min(pa, SAVANT_MIN_PA) / max(SAVANT_MIN_PA, 1)
+    return 1.0 + clamped * sample_weight
+
+
+def compute_xr_v7(home_xr_v6, away_xr_v6, home_sc_mult, away_sc_mult):
+    """
+    v7 = v6 + Statcast quality-of-contact (Barrel% + Hard-Hit%) offense refinement.
+    Applies a small multiplicative adjustment to each team's OFFENSIVE side only.
+    """
+    home_xr = max(0.5, min(15.0, home_xr_v6 * home_sc_mult))
+    away_xr = max(0.5, min(15.0, away_xr_v6 * away_sc_mult))
+    return home_xr, away_xr
 
 
 def _safe(v, default=0.0):
@@ -666,12 +884,20 @@ def main():
     yesterday = (today - timedelta(days=1)).isoformat()
     season = today.year
 
+    savant_data = _fetch_savant_statcast(season)
+    has_statcast = bool(savant_data)
+    if has_statcast:
+        print(f"  Savant Statcast loaded: {len(savant_data)} teams")
+    else:
+        print("  Savant Statcast unavailable — v7 will equal v6")
+
     seen = set()
     saved = 0
     saved_v3 = 0
     saved_v4 = 0
     saved_v5 = 0
     saved_v6 = 0
+    saved_v7 = 0
     weather_cache = {}    # (lat, lon, game_date) → weather tuple | None
     form_cache = {}       # team_id → (avg_rs, avg_ra, n) | None
 
@@ -852,6 +1078,30 @@ def main():
             ).execute()
             saved_v6 += 1
 
+            # v7: v6 + Statcast quality-of-contact (Barrel% + Hard-Hit% from Baseball Savant)
+            home_sc_mult = _statcast_off_mult(home, savant_data)
+            away_sc_mult = _statcast_off_mult(away, savant_data)
+            home_xr_v7, away_xr_v7 = compute_xr_v7(
+                home_xr_v6, away_xr_v6, home_sc_mult, away_sc_mult
+            )
+            m_v7 = markets_from_matrix(
+                build_run_matrix(home_xr_v7, away_xr_v7), home_xr_v7, away_xr_v7
+            )
+            row_v7 = {
+                "game_id": gid,
+                "model_version": MODEL_VERSION_SC,
+                "home_team_name": home,
+                "away_team_name": away,
+                "expected_home_runs": round(home_xr_v7, 3),
+                "expected_away_runs": round(away_xr_v7, 3),
+                "expected_total_runs": round(home_xr_v7 + away_xr_v7, 3),
+                **m_v7,
+            }
+            supabase.table("mlb_run_predictions").upsert(
+                row_v7, on_conflict="game_id,model_version"
+            ).execute()
+            saved_v7 += 1
+
         h_data = "strength" if hs else "prior"
         a_data = "strength" if as_ else "prior"
         hp_label = f"{home_pitcher['pitcher_name']} idx={home_pitcher['shrunk_ra9_index']}" if home_pitcher else "TBD"
@@ -895,18 +1145,28 @@ def main():
             a_str = f"L{a_f[2]}={a_f[0]:.1f}rs/{a_f[1]:.1f}ra" if a_f else "no-data"
             v6_delta = (home_xr_v6 + away_xr_v6) - (home_xr_v5 + away_xr_v5)
             form_note = f" | form: {home}={h_str} {away}={a_str} Δtot={v6_delta:+.2f}"
+        sc_note = ""
+        if has_bullpen and saved_v7 > 0:
+            h_m = home_sc_mult
+            a_m = away_sc_mult
+            v7_delta = (home_xr_v7 + away_xr_v7) - (home_xr_v6 + away_xr_v6)
+            sc_note = (
+                f" | SC: {home}×{h_m:.3f} {away}×{a_m:.3f} Δtot={v7_delta:+.3f}"
+                if has_statcast else " | SC: no-data"
+            )
         print(
             f"{home} vs {away} | xR {home_xr:.2f}-{away_xr:.2f} | "
             f"ML {m['home_win_probability']}/{m['away_win_probability']} | "
             f"O8.5 {m['over_85_probability']} | RL h-1.5 {m['home_rl_minus15_prob']} "
             f"[{h_data}/{a_data}]\n"
-            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}{env_note}{form_note}"
+            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}{env_note}{form_note}{sc_note}"
         )
 
     print(
         f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | "
         f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup) | "
-        f"{saved_v5} (v5 environment) | {saved_v6} (v6 form)"
+        f"{saved_v5} (v5 environment) | {saved_v6} (v6 form) | "
+        f"{saved_v7} (v7 statcast)"
     )
 
 
