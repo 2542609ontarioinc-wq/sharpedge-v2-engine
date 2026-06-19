@@ -25,7 +25,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 V2 = "poisson_v2"
 V3 = "poisson_v3_bullpen"
 V4 = "poisson_v4_lineup"
-VERSIONS = [V2, V3, V4]
+V5 = "poisson_v5_environment"
+VERSIONS = [V2, V3, V4, V5]
 SPORT_KEY = "baseball_mlb"
 FINISHED_STATUSES = {"FT", "AOT", "POST", "F", "FINAL", "GAME FINISHED"}
 
@@ -160,7 +161,12 @@ def main():
         return
 
     COL = 13  # width of each version column
-    LABELS = {"poisson_v2": "v2", "poisson_v3_bullpen": "v3_bullpen", "poisson_v4_lineup": "v4_lineup"}
+    LABELS = {
+        "poisson_v2": "v2",
+        "poisson_v3_bullpen": "v3_bullpen",
+        "poisson_v4_lineup": "v4_lineup",
+        "poisson_v5_environment": "v5_env",
+    }
     header_cols = "".join(f"{LABELS.get(v, v):>{COL}}" for v in VERSIONS)
     sep = "=" * (32 + COL * len(VERSIONS))
     print("\n" + sep)
@@ -197,7 +203,7 @@ def main():
     mae_v2 = results.get(V2, {}).get("mae_total_xr")
     if mae_v2 is not None:
         print()
-        for ver, label in [(V3, "v3"), (V4, "v4")]:
+        for ver, label in [(V3, "v3"), (V4, "v4"), (V5, "v5")]:
             if ver not in results:
                 continue
             mae_ver = results[ver]["mae_total_xr"]

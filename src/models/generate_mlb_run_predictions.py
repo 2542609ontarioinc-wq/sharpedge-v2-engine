@@ -12,6 +12,7 @@ MLB run totals are large enough that independence holds reasonably).
 Results written to mlb_run_predictions (upsert on game_id, model_version).
 """
 import math
+import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -27,6 +28,7 @@ FALLBACK_LEAGUE_AVG = 4.5
 MODEL_VERSION = "poisson_v2"
 MODEL_VERSION_BP = "poisson_v3_bullpen"
 MODEL_VERSION_LU = "poisson_v4_lineup"
+MODEL_VERSION_ENV = "poisson_v5_environment"
 SPORT_KEY = "baseball_mlb"
 PITCHER_WEIGHT = 0.6     # blend: 60% starting pitcher RA9 / 40% team defense
 DEFAULT_STARTER_IP = 5.5  # historical MLB average IP/GS when starter data is missing
@@ -240,6 +242,165 @@ def compute_xr_v4(home_pitcher, away_pitcher, home_bp, away_bp,
     )
 
 
+# ---------------------------------------------------------------------------
+# v5: Park factors + weather (Open-Meteo, free/keyless)
+# ---------------------------------------------------------------------------
+
+# Each entry: (keyword_in_team_name, park_run_adj, is_covered, lat, lon, cf_bearing_deg)
+# park_run_adj  — expected-total-runs adjustment at this park vs neutral (runs/game)
+# is_covered    — dome/retractable: skip weather fetch
+# cf_bearing    — compass degrees from home plate toward center field (for wind direction)
+_TEAM_STADIUM = [
+    # keyword must be distinctive within MLB; ordered specific-first for substring matching
+    ("white sox",  0.00, False, 41.8299,  -87.6338,  50),   # Guaranteed Rate Field
+    ("red sox",    0.10, False, 42.3467,  -71.0972,  45),   # Fenway Park
+    ("blue jays",  0.00, True,  43.6414,  -79.3894,   0),   # Rogers Centre (dome)
+    ("diamondback",0.00, True,  33.4453, -112.0667,   0),   # Chase Field (retractable)
+    ("braves",    -0.05, False, 33.8907,  -84.4677,  30),   # Truist Park
+    ("orioles",    0.15, False, 39.2839,  -76.6222,  45),   # Camden Yards
+    ("cubs",       0.05, False, 41.9484,  -87.6553,  25),   # Wrigley Field
+    ("reds",       0.25, False, 39.0979,  -84.5082,  30),   # Great American Ball Park
+    ("guardians", -0.05, False, 41.4962,  -81.6853, 330),   # Progressive Field
+    ("rockies",    0.80, False, 39.7559, -104.9942, 310),   # Coors Field
+    ("tigers",    -0.05, False, 42.3390,  -83.0485, 345),   # Comerica Park
+    ("astros",     0.05, True,  29.7573,  -95.3555,   0),   # Minute Maid (retractable)
+    ("royals",     0.00, False, 39.0517,  -94.4803,  25),   # Kauffman Stadium
+    ("angels",     0.00, False, 33.8003, -117.8827, 250),   # Angel Stadium
+    ("dodgers",   -0.05, False, 34.0739, -118.2400, 305),   # Dodger Stadium
+    ("marlins",   -0.20, True,  25.7781,  -80.2195,   0),   # loanDepot Park (retractable)
+    ("brewers",    0.10, True,  43.0280,  -87.9712,   0),   # American Family Field (retractable)
+    ("twins",      0.00, False, 44.9817,  -93.2775, 325),   # Target Field
+    ("mets",      -0.05, False, 40.7569,  -73.8459,  50),   # Citi Field
+    ("yankees",    0.10, False, 40.8296,  -73.9262, 320),   # Yankee Stadium
+    ("athletics",  0.00, False, 38.5789, -121.5080, 310),   # Sutter Health (temp) — neutral
+    ("phillies",   0.15, False, 39.9061,  -75.1665,  25),   # Citizens Bank Park
+    ("pirates",   -0.10, False, 40.4469,  -80.0057,  50),   # PNC Park
+    ("padres",    -0.20, False, 32.7076, -117.1570, 310),   # Petco Park
+    ("mariners",  -0.10, False, 47.5914, -122.3325,  25),   # T-Mobile Park
+    ("giants",    -0.30, False, 37.7786, -122.3893, 315),   # Oracle Park
+    ("cardinals", -0.05, False, 38.6226,  -90.1928,  25),   # Busch Stadium
+    ("rays",      -0.05, True,  27.7683,  -82.6534,   0),   # Tropicana Field (dome)
+    ("rangers",    0.15, True,  32.7473,  -97.0845,   0),   # Globe Life Field (retractable)
+    ("nationals",  0.00, False, 38.8730,  -77.0074, 340),   # Nationals Park
+]
+
+
+def _team_to_stadium_info(team_name):
+    """Return (park_run_adj, is_covered, lat, lon, cf_bearing) or neutral defaults."""
+    tn = (team_name or "").lower()
+    for kw, run_adj, covered, lat, lon, cf_bear in _TEAM_STADIUM:
+        if kw in tn:
+            return run_adj, covered, lat, lon, cf_bear
+    return 0.0, True, None, None, 0   # unknown → no adjustment, skip weather
+
+
+def _game_hour_utc(start_time_utc):
+    """Extract UTC hour from start_time_utc string; default 23 (≈7 PM ET) if missing."""
+    if not start_time_utc:
+        return 23
+    try:
+        dt = datetime.fromisoformat(str(start_time_utc).replace("Z", "+00:00"))
+        return dt.hour
+    except Exception:
+        return 23
+
+
+def _fetch_weather_open_meteo(lat, lon, game_date_str, game_hour_utc, cache):
+    """
+    Fetch hourly weather from Open-Meteo (free, keyless) for the game-time hour.
+    Returns (temp_c, windspeed_kmh, wind_dir_from_deg) or None on failure.
+    Cache key is (lat, lon, game_date_str) to avoid duplicate calls per stadium/day.
+    """
+    cache_key = (round(lat, 4), round(lon, 4), game_date_str)
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "temperature_2m,windspeed_10m,winddirection_10m",
+                "forecast_days": 3,
+                "timezone": "UTC",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            cache[cache_key] = None
+            return None
+        data = resp.json()
+        times = data["hourly"]["time"]
+        target = f"{game_date_str}T{game_hour_utc:02d}:00"
+        idx = next((i for i, t in enumerate(times) if t >= target), len(times) - 1)
+        result = (
+            data["hourly"]["temperature_2m"][idx],
+            data["hourly"]["windspeed_10m"][idx],
+            data["hourly"]["winddirection_10m"][idx],
+        )
+    except Exception:
+        result = None
+    cache[cache_key] = result
+    return result
+
+
+def _angle_diff(a, b):
+    """Smallest angle between two compass bearings (0–180°)."""
+    return abs((a - b + 180) % 360 - 180)
+
+
+def _weather_adj(temp_c, wind_kmh, wind_dir_from, cf_bearing):
+    """
+    Expected-total-runs adjustment for weather. Outdoor stadiums only.
+    Returns signed float (positive = more runs expected).
+    Adjustments are intentionally small: fractions of a run.
+    """
+    adj = 0.0
+
+    # Temperature effect
+    if temp_c is not None:
+        if temp_c < 2:       # below 35 °F — ball doesn't carry, pitchers favored
+            adj -= 0.25
+        elif temp_c < 7:     # below 45 °F
+            adj -= 0.12
+        elif temp_c > 29:    # above 85 °F — ball carries, thin/warm air
+            adj += 0.07
+
+    # Wind effect: check if blowing out (toward CF) or in (from CF)
+    if wind_kmh is not None and wind_kmh > 15:
+        wind_toward = (wind_dir_from + 180) % 360   # meteorological → compass
+        diff = _angle_diff(wind_toward, cf_bearing)
+        if diff < 45:
+            direction_factor = 1.0    # OUT — helps batters
+        elif diff > 135:
+            direction_factor = -1.0   # IN  — hurts batters
+        else:
+            direction_factor = 0.0    # crosswind — wash
+
+        if wind_kmh > 40:
+            magnitude = 0.18
+        elif wind_kmh > 25:
+            magnitude = 0.10
+        else:
+            magnitude = 0.05
+
+        adj += direction_factor * magnitude
+
+    return adj
+
+
+def compute_xr_v5(home_xr_v4, away_xr_v4, env_adj_total):
+    """
+    v5 = v4 + environment. env_adj_total is the total run adjustment (park + weather)
+    applied to the game total and split equally between home and away expected runs.
+    """
+    half = env_adj_total / 2.0
+    return (
+        max(0.5, min(15.0, home_xr_v4 + half)),
+        max(0.5, min(15.0, away_xr_v4 + half)),
+    )
+
+
 def build_bullpen_strength():
     """Load team bullpen stats keyed by team_name (current season only)."""
     season = datetime.now(ZoneInfo("America/Toronto")).year
@@ -360,6 +521,8 @@ def main():
     saved = 0
     saved_v3 = 0
     saved_v4 = 0
+    saved_v5 = 0
+    weather_cache = {}    # (lat, lon, game_date) → weather tuple | None
 
     for g in games:
         gid = g["id"]
@@ -469,6 +632,46 @@ def main():
             ).execute()
             saved_v4 += 1
 
+            # v5: v4 + park factors + weather (Open-Meteo, outdoor stadiums only)
+            park_run_adj, is_covered, lat, lon, cf_bearing = _team_to_stadium_info(home)
+
+            weather_result = None
+            if not is_covered and lat is not None:
+                game_date_str = g.get("game_date", today.isoformat())
+                game_hour = _game_hour_utc(g.get("start_time_utc"))
+                weather_result = _fetch_weather_open_meteo(
+                    lat, lon, game_date_str, game_hour, weather_cache
+                )
+
+            temp_c = wind_kmh = wind_dir_from = None
+            if weather_result:
+                temp_c, wind_kmh, wind_dir_from = weather_result
+
+            w_adj = (
+                _weather_adj(temp_c, wind_kmh, wind_dir_from, cf_bearing)
+                if not is_covered else 0.0
+            )
+            env_adj_total = park_run_adj + w_adj
+
+            home_xr_v5, away_xr_v5 = compute_xr_v5(home_xr_v4, away_xr_v4, env_adj_total)
+            m_v5 = markets_from_matrix(
+                build_run_matrix(home_xr_v5, away_xr_v5), home_xr_v5, away_xr_v5
+            )
+            row_v5 = {
+                "game_id": gid,
+                "model_version": MODEL_VERSION_ENV,
+                "home_team_name": home,
+                "away_team_name": away,
+                "expected_home_runs": round(home_xr_v5, 3),
+                "expected_away_runs": round(away_xr_v5, 3),
+                "expected_total_runs": round(home_xr_v5 + away_xr_v5, 3),
+                **m_v5,
+            }
+            supabase.table("mlb_run_predictions").upsert(
+                row_v5, on_conflict="game_id,model_version"
+            ).execute()
+            saved_v5 += 1
+
         h_data = "strength" if hs else "prior"
         a_data = "strength" if as_ else "prior"
         hp_label = f"{home_pitcher['pitcher_name']} idx={home_pitcher['shrunk_ra9_index']}" if home_pitcher else "TBD"
@@ -492,17 +695,29 @@ def main():
                 h_str = f"{home_off_disp:.3f}" if home_off_disp is not None else "avg"
                 a_str = f"{away_off_disp:.3f}" if away_off_disp is not None else "avg"
                 lu_note = f" | LU off: {home}={h_str} {away}={a_str}"
+        env_note = ""
+        if has_bullpen and saved_v5 > 0:
+            _park_adj_disp, _covered_disp, *_ = _team_to_stadium_info(home)
+            if _covered_disp:
+                env_note = f" | park={_park_adj_disp:+.2f} [covered]"
+            elif weather_result and temp_c is not None:
+                env_note = (
+                    f" | park={_park_adj_disp:+.2f} w={w_adj:+.2f}"
+                    f" [{temp_c:.0f}°C {wind_kmh:.0f}km/h]"
+                )
+            else:
+                env_note = f" | park={_park_adj_disp:+.2f} w=n/a"
         print(
             f"{home} vs {away} | xR {home_xr:.2f}-{away_xr:.2f} | "
             f"ML {m['home_win_probability']}/{m['away_win_probability']} | "
             f"O8.5 {m['over_85_probability']} | RL h-1.5 {m['home_rl_minus15_prob']} "
             f"[{h_data}/{a_data}]\n"
-            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}"
+            f"  SP: {home}→{hp_label} | {away}→{ap_label}{bp_note}{lu_note}{env_note}"
         )
 
     print(
         f"\n✅ MLB Poisson run predictions saved: {saved} (v2) | "
-        f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup)"
+        f"{saved_v3} (v3 bullpen) | {saved_v4} (v4 lineup) | {saved_v5} (v5 environment)"
     )
 
 
