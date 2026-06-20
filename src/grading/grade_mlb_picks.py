@@ -23,7 +23,9 @@ from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 SPORT_KEY = "baseball_mlb"
-FINISHED_STATUSES = {"ft", "aot", "post", "f", "final", "game finished", "finished"}
+FINISHED_STATUSES = {"ft", "aot", "f", "final", "game finished", "finished"}
+# "post" = API-Sports status for Postponed; must be caught even when period is not yet set.
+POSTPONED_STATUSES = {"postponed", "cancelled", "canceled", "suspended", "post"}
 
 # Bidirectional team name/abbreviation aliases.
 # Maps every known form → one canonical key so both sides of a comparison
@@ -63,6 +65,8 @@ def _num(v, default=0.0):
 def _is_finished(g):
     status = (g.get("status") or "").lower()
     period = (g.get("period") or "").lower()
+    if status in POSTPONED_STATUSES or period in POSTPONED_STATUSES:
+        return False
     return status in FINISHED_STATUSES or period in FINISHED_STATUSES
 
 
@@ -178,13 +182,21 @@ def units_result(grade, odds_decimal, no_odds=False):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _upsert_grade(row: dict) -> None:
+    supabase.table("mlb_pick_grades").upsert(row, on_conflict="game_id,market,pick").execute()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     games = (
         supabase.table("games")
-        .select("id,home_team_name,away_team_name,home_score,away_score,status,period")
+        .select("id,game_date,home_team_name,away_team_name,home_score,away_score,status,period")
         .eq("sport_key", SPORT_KEY)
         .execute()
         .data
@@ -205,6 +217,9 @@ def main():
 
         hs = int(_num(game.get("home_score")))
         as_ = int(_num(game.get("away_score")))
+        if hs == 0 and as_ == 0:
+            print(f"  SKIP (0-0 placeholder) {game.get('game_date')} | {game.get('away_team_name')} @ {game.get('home_team_name')}")
+            continue
         home = game["home_team_name"]
         away = game["away_team_name"]
 
@@ -236,10 +251,11 @@ def main():
             "grade": grade,
             "units_result": units,
             "roi_percent": round(units * 100, 2),
+            "game_date": game.get("game_date"),
             "graded_at": now,
         }
-        supabase.table("mlb_pick_grades").upsert(row, on_conflict="game_id,market,pick").execute()
-        print(f"{home} vs {away} | {pred.get('best_pick')} | {hs}-{as_} | {grade} | Units {units:+.2f}")
+        _upsert_grade(row)
+        print(f"{game.get('game_date')} | {home} vs {away} | {pred.get('best_pick')} | {hs}-{as_} | {grade} | Units {units:+.2f}")
         saved += 1
 
     # === Safe Zone picks ===
@@ -253,6 +269,9 @@ def main():
 
         hs = int(_num(game.get("home_score")))
         as_ = int(_num(game.get("away_score")))
+        if hs == 0 and as_ == 0:
+            print(f"  SKIP (0-0 placeholder) {game.get('game_date')} | {game.get('away_team_name')} @ {game.get('home_team_name')}")
+            continue
         home = game["home_team_name"]
         away = game["away_team_name"]
 
@@ -288,10 +307,11 @@ def main():
                 "grade": grade,
                 "units_result": units,
                 "roi_percent": round(units * 100, 2),
+                "game_date": game.get("game_date"),
                 "graded_at": now,
             }
-            supabase.table("mlb_pick_grades").upsert(row, on_conflict="game_id,market,pick").execute()
-            print(f"{home} vs {away} | [{market_label}] {pick_val} | {hs}-{as_} | {grade}")
+            _upsert_grade(row)
+            print(f"{game.get('game_date')} | {home} vs {away} | [{market_label}] {pick_val} | {hs}-{as_} | {grade}")
             saved += 1
 
     print(f"\n✅ MLB picks graded: {saved}")

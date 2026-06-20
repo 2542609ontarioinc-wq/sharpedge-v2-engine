@@ -1,0 +1,104 @@
+MLB GRADING FIX — PART B
+Applied: 2026-06-20
+================================================================================
+
+WHAT WAS FIXED
+--------------
+Three bugs closed. No soccer or prediction logic touched.
+
+1. "post" not caught as postponed  [grade_mlb_picks.py + grade_mlb_model_picks.py]
+   API-Sports sets status=POST for postponed games. "post" was absent from
+   POSTPONED_STATUSES, so a POST game with period=null/empty could fall through
+   _is_finished() as unclassified — neither finished nor postponed — and if the
+   games table row briefly had period="Finished" due to a data timing issue, it
+   would be treated as finished. "post" is now in POSTPONED_STATUSES in all
+   three grading files, so status=POST always short-circuits to False regardless
+   of what period says.
+
+   Also fixed in grade_mlb_prop_picks.py: "post" was incorrectly listed in
+   FINISHED_STATUSES there (would have caused postponed games to be treated as
+   finished for prop grading). Removed it and added a proper POSTPONED check.
+
+2. 0-0 placeholder score graded as real result  [grade_mlb_picks.py + grade_mlb_model_picks.py]
+   A 0-0 final is impossible in MLB. If a game somehow passes the status check
+   with home_score=0, away_score=0 (placeholder), the grader now skips it and
+   leaves the pick pending. This is the direct cause of the "Atlanta Braves +2.5
+   | actual 0-0 | WIN" bad grade: 0 + 2.5 > 0 → WIN on a game that never ran.
+
+   Sharp picks loop and safe zone loop both have the guard:
+     if hs == 0 and as_ == 0: continue
+
+3. game_date silently stripped on every upsert  [grade_mlb_picks.py]
+   _upsert_grade() had a try/except that caught column-not-found errors for
+   game_date and retried without it. This meant every graded row had game_date=NULL
+   in mlb_pick_grades even though the games table has the date. The fallback is
+   removed; the column is now always written. Requires sql/087 to be applied first
+   (see SQL section below).
+
+   grade_mlb_model_picks.py also now writes game_date to mlb_model_grades.
+   Requires sql/088 to be applied first.
+
+
+FILES CHANGED
+-------------
+  src/grading/grade_mlb_picks.py
+    - Removed: import of APIError (no longer needed)
+    - Added "post" to POSTPONED_STATUSES
+    - _upsert_grade(): replaced try/except fallback with direct upsert
+    - Sharp picks loop: 0-0 guard + game_date always in row dict
+    - Safe zone loop: 0-0 guard + game_date always in row dict
+
+  src/grading/grade_mlb_model_picks.py
+    - Removed wrong comment "post intentionally excluded"
+    - Added "post" to POSTPONED_STATUSES
+    - Added game_date to games SELECT
+    - Added 0-0 guard (increments skipped counter)
+    - Added game_date to row dict
+
+  src/grading/grade_mlb_prop_picks.py
+    - Removed "post" from FINISHED_STATUSES (it was listed there incorrectly)
+    - Added POSTPONED_STATUSES
+    - Replaced single finished filter with two-part: not-postponed AND is-finished
+
+  sql/088_mlb_model_grades_add_game_date.sql  [NEW FILE]
+
+
+SQL TO RUN IN SUPABASE
+----------------------
+Run both in Supabase Dashboard → SQL Editor, in this order:
+
+  1. sql/087_mlb_pick_grades_add_game_date.sql
+     -- adds game_date date column + index to mlb_pick_grades
+
+       ALTER TABLE mlb_pick_grades ADD COLUMN IF NOT EXISTS game_date date;
+       CREATE INDEX IF NOT EXISTS idx_mlb_pick_grades_date ON mlb_pick_grades (game_date);
+
+  2. sql/088_mlb_model_grades_add_game_date.sql
+     -- adds game_date date column + index to mlb_model_grades
+
+       ALTER TABLE mlb_model_grades ADD COLUMN IF NOT EXISTS game_date date;
+       CREATE INDEX IF NOT EXISTS idx_mlb_model_grades_date ON mlb_model_grades (game_date);
+
+Both use ADD COLUMN IF NOT EXISTS, so they are safe to re-run.
+Run 087 before 088. Run both before executing the grading chain.
+
+
+RE-GRADE CONFIRMATION
+---------------------
+STATUS: PENDING — SQL migrations must be applied first.
+
+Once sql/087 and sql/088 are applied, run the full chain:
+
+  python -m src.models.grade_mlb_results         # grades picks + props + builds detail
+  python -m src.grading.grade_mlb_model_picks    # grades shadow model picks
+  python -m src.analytics.build_mlb_model_analytics  # rebuilds model scoreboard
+
+Expected post-run state:
+  - mlb_pick_grades:      51 rows, all with game_date populated (2026-06-18 or 2026-06-19)
+  - mlb_model_grades:     93 rows, all with game_date populated
+  - mlb_pick_detail:      51 rows rebuilt from corrected grades
+  - mlb_prop_detail:      rebuilt from corrected prop grades
+  - mlb_model_analytics:  rebuilt scoreboard
+  - SF Giants @ Atlanta Braves 2026-06-18 (game_id 6b4f617b): 0 rows in all
+    grade tables — correctly stays pending/ungraded (postponed, score 0-0)
+  - Audit: 0 mismatches vs MLB Stats API (confirmed in grading_audit.txt)

@@ -1,0 +1,143 @@
+MLB GRADING AUDIT — PART A
+Generated: 2026-06-20
+================================================================================
+
+ROOT CAUSE OF THE 0-0 / WRONG-GRADE BUG
+-----------------------------------------
+The grader (src/grading/grade_mlb_picks.py) trusts the `games` table status
+fields and NEVER checks whether the score is real before grading.
+
+The SF Giants @ Atlanta Braves game on 2026-06-18 was postponed and sits in
+the `games` table with:
+  status=POST | period=Postponed | home_score=0 | away_score=0 (placeholder)
+
+The bug fired when the grader ran at a moment when `period` was not yet set to
+"Postponed". At that point:
+  - status = "post" → NOT in POSTPONED_STATUSES (has "postponed" but not "post")
+  - period = null/empty → also not caught
+  - _is_finished() fell through and returned True (incorrectly treated as finished)
+
+With 0-0 score, grading "Atlanta Braves +2.5" (safe_banker):
+  team_margin = home - away = 0 - 0 = 0
+  team_margin + line = 0 + 2.5 = 2.5 > 0  →  WIN  (wrong — game never played)
+
+
+THREE CONCRETE BUGS IDENTIFIED
+-------------------------------
+1. "post" not in POSTPONED_STATUSES
+   File: src/grading/grade_mlb_picks.py:28
+   Effect: status=POST games only protected if period="Postponed" is also set.
+           If period is null/empty, the game falls through as unclassified.
+           Fix: add "post" to POSTPONED_STATUSES.
+
+2. No guard against 0-0 scores being graded
+   File: src/grading/grade_mlb_picks.py:main()
+   Effect: any game with placeholder 0-0 score and a status that looks
+           "finished" will be graded. In MLB a 0-0 final is impossible.
+           Fix: skip grading if home_score == 0 and away_score == 0.
+
+3. game_date column missing from mlb_pick_grades (sql/087 not applied)
+   File: src/grading/grade_mlb_picks.py:189-196 (_upsert_grade fallback)
+   Effect: all 51 graded rows have game_date=NULL; the fallback silently
+           strips the field on every upsert.
+           Fix: run sql/087 migration to add game_date column, then remove
+           the try/except fallback.
+
+
+POSTPONED GAME — CURRENT STATE
+--------------------------------
+game_id: 6b4f617b-9d6b-4edf-bebe-9022697674fc
+Date:    2026-06-18
+Matchup: San Francisco Giants @ Atlanta Braves
+Status:  POST | period=Postponed | score=0-0
+
+Picks in mlb_final_predictions:
+  moneyline | Atlanta Braves
+
+Picks in mlb_safe_zone:
+  balanced=Atlanta Braves +1.5 | banker=Atlanta Braves +2.5
+
+Rows in mlb_pick_grades:  0  (correctly NOT graded as of today)
+Rows in mlb_pick_detail:  0  (correctly NOT graded as of today)
+
+The bad grade was from a prior run when period was null/missing.
+Today's run (2026-06-20T14:36:35 UTC) correctly skips it.
+
+
+AUDIT TABLE — ALL 51 GRADED PICKS vs MLB STATS API
+----------------------------------------------------
+All picks graded at: 2026-06-20T14:36:35.973535+00:00
+Score format: home_score-away_score
+
+DATE       | AWAY                          | HOME                          | MARKET        | PICK                          | GRADER SCORE | MLB API SCORE | API STATUS | CUR GRADE | CORRECT GRADE | FLAG
+-----------+-------------------------------+-------------------------------+---------------+-------------------------------+--------------+---------------+------------+-----------+---------------+------
+2026-06-18 | Baltimore Orioles             | Seattle Mariners              | safe_balanced | Over 6.5                      | 3-0          | 3-0           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Baltimore Orioles             | Seattle Mariners              | totals        | Over 7.5                      | 3-0          | 3-0           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Chicago White Sox             | New York Yankees              | safe_balanced | Over 6.5                      | 1-5          | 1-5           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Chicago White Sox             | New York Yankees              | totals        | Over 7.5                      | 1-5          | 1-5           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Cleveland Guardians           | Milwaukee Brewers             | safe_balanced | Under 10.5                    | 2-4          | 2-4           | Final      | WIN       | WIN           | OK
+2026-06-18 | Cleveland Guardians           | Milwaukee Brewers             | totals        | Under 9.5                     | 2-4          | 2-4           | Final      | WIN       | WIN           | OK
+2026-06-18 | Los Angeles Angels            | Athletics                     | safe_balanced | Over 6.5                      | 5-0          | 5-0           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Los Angeles Angels            | Athletics                     | safe_banker   | Over 5.5                      | 5-0          | 5-0           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Los Angeles Angels            | Athletics                     | totals        | Over 7.5                      | 5-0          | 5-0           | Final      | LOSS      | LOSS          | OK
+2026-06-18 | Minnesota Twins               | Texas Rangers                 | safe_balanced | Over 6.5                      | 3-9          | 3-9           | Final      | WIN       | WIN           | OK
+2026-06-18 | Minnesota Twins               | Texas Rangers                 | totals        | Over 7.5                      | 3-9          | 3-9           | Final      | WIN       | WIN           | OK
+2026-06-18 | New York Mets                 | Philadelphia Phillies         | safe_balanced | Over 6.5                      | 4-6          | 4-6           | Final      | WIN       | WIN           | OK
+2026-06-18 | New York Mets                 | Philadelphia Phillies         | totals        | Over 7.5                      | 4-6          | 4-6           | Final      | WIN       | WIN           | OK
+2026-06-18 | St.Louis Cardinals            | Kansas City Royals            | safe_balanced | Over 6.5                      | 14-6         | 14-6          | Final      | WIN       | WIN           | OK
+2026-06-18 | St.Louis Cardinals            | Kansas City Royals            | totals        | Over 7.5                      | 14-6         | 14-6          | Final      | WIN       | WIN           | OK
+2026-06-18 | Toronto Blue Jays             | Boston Red Sox                | safe_balanced | Under 10.5                    | 3-4          | 3-4           | Final      | WIN       | WIN           | OK
+2026-06-18 | Toronto Blue Jays             | Boston Red Sox                | safe_banker   | Under 11.5                    | 3-4          | 3-4           | Final      | WIN       | WIN           | OK
+2026-06-18 | Toronto Blue Jays             | Boston Red Sox                | totals        | Under 9.5                     | 3-4          | 3-4           | Final      | WIN       | WIN           | OK
+2026-06-19 | Baltimore Orioles             | Los Angeles Dodgers           | safe_balanced | Over 6.5                      | 6-5          | 6-5           | Final      | WIN       | WIN           | OK
+2026-06-19 | Baltimore Orioles             | Los Angeles Dodgers           | safe_banker   | Over 5.5                      | 6-5          | 6-5           | Final      | WIN       | WIN           | OK
+2026-06-19 | Baltimore Orioles             | Los Angeles Dodgers           | totals        | Over 7.5                      | 6-5          | 6-5           | Final      | WIN       | WIN           | OK
+2026-06-19 | Boston Red Sox                | Seattle Mariners              | safe_balanced | Under 10.5                    | 2-6          | 2-6           | Final      | WIN       | WIN           | OK
+2026-06-19 | Boston Red Sox                | Seattle Mariners              | safe_banker   | Under 11.5                    | 2-6          | 2-6           | Final      | WIN       | WIN           | OK
+2026-06-19 | Boston Red Sox                | Seattle Mariners              | totals        | Under 9.5                     | 2-6          | 2-6           | Final      | WIN       | WIN           | OK
+2026-06-19 | Chicago White Sox             | Detroit Tigers                | safe_balanced | Over 6.5                      | 4-3          | 4-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | Chicago White Sox             | Detroit Tigers                | totals        | Over 7.5                      | 4-3          | 4-3           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | Cincinnati Reds               | New York Yankees              | moneyline     | New York Yankees              | 5-0          | 5-0           | Final      | WIN       | WIN           | OK
+2026-06-19 | Cincinnati Reds               | New York Yankees              | safe_balanced | New York Yankees +1.5         | 5-0          | 5-0           | Final      | WIN       | WIN           | OK
+2026-06-19 | Cincinnati Reds               | New York Yankees              | safe_banker   | New York Yankees +2.5         | 5-0          | 5-0           | Final      | WIN       | WIN           | OK
+2026-06-19 | Cleveland Guardians           | Houston Astros                | safe_balanced | Over 6.5                      | 9-3          | 9-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | Cleveland Guardians           | Houston Astros                | totals        | Over 7.5                      | 9-3          | 9-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | Los Angeles Angels            | Athletics                     | safe_balanced | Over 6.5                      | 12-11        | 12-11         | Final      | WIN       | WIN           | OK
+2026-06-19 | Los Angeles Angels            | Athletics                     | totals        | Over 7.5                      | 12-11        | 12-11         | Final      | WIN       | WIN           | OK
+2026-06-19 | Milwaukee Brewers             | Atlanta Braves                | safe_balanced | Under 10.5                    | 3-2          | 3-2           | Final      | WIN       | WIN           | OK
+2026-06-19 | Milwaukee Brewers             | Atlanta Braves                | totals        | Under 9.5                     | 3-2          | 3-2           | Final      | WIN       | WIN           | OK
+2026-06-19 | Minnesota Twins               | Arizona Diamondbacks          | safe_balanced | Over 6.5                      | 9-5          | 9-5           | Final      | WIN       | WIN           | OK
+2026-06-19 | Minnesota Twins               | Arizona Diamondbacks          | totals        | Over 7.5                      | 9-5          | 9-5           | Final      | WIN       | WIN           | OK
+2026-06-19 | Pittsburgh Pirates            | Colorado Rockies              | safe_balanced | Over 6.5                      | 4-3          | 4-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | Pittsburgh Pirates            | Colorado Rockies              | safe_banker   | Over 5.5                      | 4-3          | 4-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | Pittsburgh Pirates            | Colorado Rockies              | totals        | Over 7.5                      | 4-3          | 4-3           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | San Diego Padres              | Texas Rangers                 | safe_balanced | Under 10.5                    | 9-7          | 9-7           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | San Diego Padres              | Texas Rangers                 | safe_banker   | Under 11.5                    | 9-7          | 9-7           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | San Diego Padres              | Texas Rangers                 | totals        | Under 9.5                     | 9-7          | 9-7           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | San Francisco Giants          | Miami Marlins                 | safe_balanced | Over 6.5                      | 4-3          | 4-3           | Final      | WIN       | WIN           | OK
+2026-06-19 | San Francisco Giants          | Miami Marlins                 | totals        | Over 7.5                      | 4-3          | 4-3           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | St.Louis Cardinals            | Kansas City Royals            | safe_balanced | Under 10.5                    | 6-5          | 6-5           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | St.Louis Cardinals            | Kansas City Royals            | totals        | Under 9.5                     | 6-5          | 6-5           | Final      | LOSS      | LOSS          | OK
+2026-06-19 | Toronto Blue Jays             | Chicago Cubs                  | safe_balanced | Under 10.5                    | 16-2         | 16-2          | Final      | LOSS      | LOSS          | OK
+2026-06-19 | Toronto Blue Jays             | Chicago Cubs                  | totals        | Under 9.5                     | 16-2         | 16-2          | Final      | LOSS      | LOSS          | OK
+2026-06-19 | Washington Nationals          | Tampa Bay Rays                | safe_balanced | Over 6.5                      | 5-2          | 5-2           | Final      | WIN       | WIN           | OK
+2026-06-19 | Washington Nationals          | Tampa Bay Rays                | totals        | Over 7.5                      | 5-2          | 5-2           | Final      | LOSS      | LOSS          | OK
+-----------+-------------------------------+-------------------------------+---------------+-------------------------------+--------------+---------------+------------+-----------+---------------+------
+TOTAL: 51 picks | MISMATCHES: 0 | All grades correct vs MLB Stats API
+
+
+SUMMARY
+-------
+- All 51 currently graded picks are 100% correct per the MLB Stats API.
+- The postponed SF Giants @ Atlanta Braves game is correctly NOT graded.
+- All graded games are from 2026-06-18 and 2026-06-19.
+- The bad grade the user saw was from a prior grader run; today's run
+  (2026-06-20T14:36:35 UTC) correctly skips the postponed game.
+- The game_date column is NULL on all 51 rows (sql/087 migration not applied).
+
+PENDING FIXES (Part B):
+  1. Add "post" to POSTPONED_STATUSES in grade_mlb_picks.py
+  2. Skip grading when home_score == 0 and away_score == 0
+  3. Apply sql/087 migration to add game_date column to mlb_pick_grades
+  4. Rebuild pick_detail / prop_detail / model_grades / model_analytics
+     once fixes are in place

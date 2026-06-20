@@ -16,7 +16,9 @@ from src.grading.grade_mlb_picks import grade_mlb_pick, units_result
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 SPORT_KEY = "baseball_mlb"
-FINISHED_STATUSES = {"ft", "aot", "post", "f", "final", "game finished", "finished"}
+FINISHED_STATUSES = {"ft", "aot", "f", "final", "game finished", "finished"}
+# "post" = API-Sports status for Postponed; must be caught even when period is not yet set.
+POSTPONED_STATUSES = {"postponed", "cancelled", "canceled", "suspended", "post"}
 
 
 def _num(v, default=0.0):
@@ -27,16 +29,17 @@ def _num(v, default=0.0):
 
 
 def _is_finished(g):
-    return (
-        (g.get("status") or "").lower() in FINISHED_STATUSES
-        or (g.get("period") or "").lower() in FINISHED_STATUSES
-    )
+    status = (g.get("status") or "").lower()
+    period = (g.get("period") or "").lower()
+    if status in POSTPONED_STATUSES or period in POSTPONED_STATUSES:
+        return False
+    return status in FINISHED_STATUSES or period in FINISHED_STATUSES
 
 
 def main():
     games = (
         supabase.table("games")
-        .select("id,home_team_name,away_team_name,home_score,away_score,status,period")
+        .select("id,game_date,home_team_name,away_team_name,home_score,away_score,status,period")
         .eq("sport_key", SPORT_KEY)
         .execute()
         .data
@@ -58,6 +61,9 @@ def main():
 
         hs = int(_num(game.get("home_score")))
         as_ = int(_num(game.get("away_score")))
+        if hs == 0 and as_ == 0:
+            skipped += 1
+            continue
         home = game["home_team_name"]
         away = game["away_team_name"]
 
@@ -90,6 +96,7 @@ def main():
             "grade": grade,
             "units_result": units,
             "roi_percent": round(units * 100, 2),
+            "game_date": game.get("game_date"),
             "graded_at": now,
         }
 

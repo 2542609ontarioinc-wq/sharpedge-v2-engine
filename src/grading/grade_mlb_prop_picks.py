@@ -30,7 +30,9 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 SPORT_KEY = "baseball_mlb"
 MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
-FINISHED_STATUSES = {"ft", "aot", "post", "f", "final", "game finished", "finished"}
+FINISHED_STATUSES = {"ft", "aot", "f", "final", "game finished", "finished"}
+# "post" = API-Sports status for Postponed — never treat as finished.
+POSTPONED_STATUSES = {"postponed", "cancelled", "canceled", "suspended", "post"}
 
 
 def _parse_ip(s):
@@ -163,8 +165,10 @@ def main():
     # Only grade against games that are definitively Final in our DB.
     finished = {
         g["id"]: g for g in games
-        if (g.get("status") or "").lower() in FINISHED_STATUSES
-        or (g.get("period") or "").lower() in FINISHED_STATUSES
+        if ((g.get("status") or "").lower() not in POSTPONED_STATUSES
+            and (g.get("period") or "").lower() not in POSTPONED_STATUSES)
+        and ((g.get("status") or "").lower() in FINISHED_STATUSES
+             or (g.get("period") or "").lower() in FINISHED_STATUSES)
     }
 
     props = supabase.table("mlb_player_props").select("*").execute().data
