@@ -58,6 +58,14 @@ jobs:
         run: |
           python -m src.models.grade_mlb_results
 
+      - name: Grade per-model picks (v2–v7 shadow comparison) and update model scoreboard
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.grading.grade_mlb_model_picks
+          python -m src.analytics.build_mlb_model_analytics
+
       - name: Compute CLV per graded pick and update track record
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
