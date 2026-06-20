@@ -1,6 +1,10 @@
+"use client";
+
+import { useState } from "react";
 import type { MLBModelAnalytics, MLBModelLabGame, MLBModelVersionData } from "@/lib/types";
 import { formatFirstPitch } from "@/lib/format";
 import { EmptyState } from "./EmptyState";
+import { DateSelector } from "./DateSelector";
 
 const MODEL_ORDER = [
   "poisson_v2",
@@ -212,6 +216,13 @@ function ModelScoreboard({ analytics }: { analytics: MLBModelAnalytics[] }) {
 
 // ─── MAIN VIEW ───────────────────────────────────────────────────────────────
 
+function gameDate(g: MLBModelLabGame): string | null {
+  if (!g.gameTime) return null;
+  const d = new Date(g.gameTime);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto" }).format(d);
+}
+
 export function MLBModelLabView({
   games,
   analytics,
@@ -219,7 +230,18 @@ export function MLBModelLabView({
   games: MLBModelLabGame[];
   analytics: MLBModelAnalytics[];
 }) {
-  const divergentCount = games.filter((g) => g.hasDisagreement).length;
+  const [dateFilter, setDateFilter] = useState("all");
+
+  const gameDates = [...new Set(
+    games.map(gameDate).filter(Boolean) as string[]
+  )].sort();
+
+  const filteredGames =
+    dateFilter === "all"
+      ? games
+      : games.filter((g) => gameDate(g) === dateFilter);
+
+  const divergentCount = filteredGames.filter((g) => g.hasDisagreement).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -232,7 +254,8 @@ export function MLBModelLabView({
         <span className="font-semibold text-accent">v2 is the only live production model.</span>
         {divergentCount > 0 && (
           <span className="ml-2 font-semibold text-watch">
-            {divergentCount} game{divergentCount !== 1 ? "s" : ""} with model divergence today.
+            {divergentCount} game{divergentCount !== 1 ? "s" : ""} with model divergence
+            {dateFilter !== "all" ? " on selected date" : " today"}.
           </span>
         )}
       </div>
@@ -242,7 +265,7 @@ export function MLBModelLabView({
         <ModelScoreboard analytics={analytics} />
       </div>
 
-      {/* Section B: Today's picks by model */}
+      {/* Section B: Game picks by model */}
       <section>
         <h3 className="mb-3 text-sm font-bold text-ink">
           Today&rsquo;s Picks by Model
@@ -251,14 +274,20 @@ export function MLBModelLabView({
           </span>
         </h3>
 
-        {games.length === 0 ? (
+        <DateSelector dates={gameDates} selected={dateFilter} onChange={setDateFilter} />
+
+        {filteredGames.length === 0 ? (
           <EmptyState
             title="No model lab data yet"
-            subtitle="Run the engine to generate today's multi-version predictions. All six model versions write to mlb_run_predictions and mlb_model_picks."
+            subtitle={
+              dateFilter !== "all"
+                ? "No games on the selected date. Try a different date or select 'All dates'."
+                : "Run the engine to generate today's multi-version predictions. All six model versions write to mlb_run_predictions and mlb_model_picks."
+            }
           />
         ) : (
           <div className="flex flex-col gap-4">
-            {games.map((game) => (
+            {filteredGames.map((game) => (
               <GameLabCard key={game.gameId} game={game} />
             ))}
           </div>

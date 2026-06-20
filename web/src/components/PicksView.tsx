@@ -11,6 +11,7 @@ import { MLBModelLabView } from "./MLBModelLabView";
 import { MLBDiagnosticsView } from "./MLBDiagnosticsView";
 import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
 import { EmptyState } from "./EmptyState";
+import { DateSelector } from "./DateSelector";
 
 type Sport = "soccer" | "mlb";
 type Tab = "sharp" | "safe" | "record" | "props" | "lab" | "diagnostics";
@@ -35,6 +36,13 @@ function groupByGame<T extends { gameId: string }>(
   return [...map.values()].sort((a, b) =>
     (getTime(a[0]) ?? "").localeCompare(getTime(b[0]) ?? "")
   );
+}
+
+function gameDateToronto(gameTime: string | null): string | null {
+  if (!gameTime) return null;
+  const d = new Date(gameTime);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto" }).format(d);
 }
 
 export function PicksView({
@@ -63,15 +71,43 @@ export function PicksView({
   const [sport, setSport] = useState<Sport>("soccer");
   const [tab, setTab] = useState<Tab>("sharp");
   const [tierFilter, setTierFilter] = useState<TierFilter>("all");
+  const [mlbSharpDate, setMlbSharpDate] = useState("all");
+  const [mlbSafeDate, setMlbSafeDate] = useState("all");
+  const [mlbPropsDate, setMlbPropsDate] = useState("all");
 
   const matchesTier = (tier: string | null) =>
     tierFilter === "all" || tier === tierFilter;
+
+  // Derive unique sorted dates from each MLB tab's full data set (unfiltered, for the selector)
+  const mlbSharpDates = [...new Set(
+    mlbSharpPicks.map((p) => gameDateToronto(p.gameTime)).filter(Boolean) as string[]
+  )].sort();
+  const mlbSafeDates = [...new Set(
+    mlbSafeZone.map((p) => gameDateToronto(p.gameTime)).filter(Boolean) as string[]
+  )].sort();
+  const mlbPropsDates = [...new Set(
+    mlbPlayerProps.map((p) => gameDateToronto(p.gameTime)).filter(Boolean) as string[]
+  )].sort();
+
+  // Apply date filters
+  const filteredMlbSharpPicks =
+    mlbSharpDate === "all"
+      ? mlbSharpPicks
+      : mlbSharpPicks.filter((p) => gameDateToronto(p.gameTime) === mlbSharpDate);
+  const filteredMlbSafeZone =
+    mlbSafeDate === "all"
+      ? mlbSafeZone
+      : mlbSafeZone.filter((p) => gameDateToronto(p.gameTime) === mlbSafeDate);
+  const filteredMlbPlayerProps =
+    mlbPropsDate === "all"
+      ? mlbPlayerProps
+      : mlbPlayerProps.filter((p) => gameDateToronto(p.gameTime) === mlbPropsDate);
 
   // Game groups — a game card shows if any of its picks match the tier filter
   const soccerGroups = groupByGame(sharpPicks, (p) => p.kickoff).filter((g) =>
     g.some((p) => matchesTier(p.confidenceTier))
   );
-  const mlbGroups = groupByGame(mlbSharpPicks, (p) => p.gameTime).filter((g) =>
+  const mlbGroups = groupByGame(filteredMlbSharpPicks, (p) => p.gameTime).filter((g) =>
     g.some((p) => matchesTier(p.confidenceTier))
   );
 
@@ -79,12 +115,12 @@ export function PicksView({
   const sharpCount =
     sport === "soccer"
       ? sharpPicks.filter((p) => matchesTier(p.confidenceTier)).length
-      : mlbSharpPicks.filter((p) => matchesTier(p.confidenceTier)).length;
-  const safeCount = sport === "soccer" ? safeZone.length : mlbSafeZone.length;
-  const propsCount = mlbPlayerProps.length;
+      : filteredMlbSharpPicks.filter((p) => matchesTier(p.confidenceTier)).length;
+  const safeCount = sport === "soccer" ? safeZone.length : filteredMlbSafeZone.length;
+  const propsCount = filteredMlbPlayerProps.length;
 
   // Group player props by game for the Props tab
-  const propsByGame = mlbPlayerProps.reduce<Map<string, MLBPlayerProp[]>>((acc, p) => {
+  const propsByGame = filteredMlbPlayerProps.reduce<Map<string, MLBPlayerProp[]>>((acc, p) => {
     const list = acc.get(p.gameId) ?? [];
     list.push(p);
     acc.set(p.gameId, list);
@@ -216,48 +252,67 @@ export function PicksView({
           <TrackRecordView trackRecord={trackRecord} />
         )
       ) : tab === "sharp" ? (
-        mlbGroups.length > 0 ? (
-          <div className="flex flex-col gap-3">
-            {mlbGroups.map((group) => (
-              <MLBGameGroupCard key={group[0].gameId} picks={group} />
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            title="No MLB picks today"
-            subtitle={
-              tierFilter !== "all"
-                ? `No ${tierFilter} picks today. Try a different tier filter.`
-                : "The Poisson model hasn't found a value edge on today's slate yet. Check back after first pitches approach."
-            }
-          />
-        )
+        <>
+          <DateSelector dates={mlbSharpDates} selected={mlbSharpDate} onChange={setMlbSharpDate} />
+          {mlbGroups.length > 0 ? (
+            <div className="flex flex-col gap-3">
+              {mlbGroups.map((group) => (
+                <MLBGameGroupCard key={group[0].gameId} picks={group} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No MLB picks today"
+              subtitle={
+                tierFilter !== "all"
+                  ? `No ${tierFilter} picks today. Try a different tier filter.`
+                  : mlbSharpDate !== "all"
+                  ? "No picks on the selected date. Try a different date or select 'All dates'."
+                  : "The Poisson model hasn't found a value edge on today's slate yet. Check back after first pitches approach."
+              }
+            />
+          )}
+        </>
       ) : tab === "safe" ? (
-        mlbSafeZone.length > 0 ? (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {mlbSafeZone.map((pick) => (
-              <MLBSafeZoneCard key={pick.gameId} pick={pick} />
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            title="No MLB safe zone coverage yet"
-            subtitle="Balanced and banker run-line/total plays for today's games will appear here once the engine runs."
-          />
-        )
+        <>
+          <DateSelector dates={mlbSafeDates} selected={mlbSafeDate} onChange={setMlbSafeDate} />
+          {filteredMlbSafeZone.length > 0 ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {filteredMlbSafeZone.map((pick) => (
+                <MLBSafeZoneCard key={pick.gameId} pick={pick} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No MLB safe zone coverage yet"
+              subtitle={
+                mlbSafeDate !== "all"
+                  ? "No coverage on the selected date. Try a different date or select 'All dates'."
+                  : "Balanced and banker run-line/total plays for today's games will appear here once the engine runs."
+              }
+            />
+          )}
+        </>
       ) : tab === "props" ? (
-        propsByGame.size > 0 ? (
-          <div className="flex flex-col gap-3">
-            {[...propsByGame.entries()].map(([gameId, props]) => (
-              <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} />
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            title="No player props yet"
-            subtitle="Pitcher K/Outs, ER, H, BB and batter H+R+RBI props will appear here once the engine runs and market odds are available."
-          />
-        )
+        <>
+          <DateSelector dates={mlbPropsDates} selected={mlbPropsDate} onChange={setMlbPropsDate} />
+          {propsByGame.size > 0 ? (
+            <div className="flex flex-col gap-3">
+              {[...propsByGame.entries()].map(([gameId, props]) => (
+                <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No player props yet"
+              subtitle={
+                mlbPropsDate !== "all"
+                  ? "No props on the selected date. Try a different date or select 'All dates'."
+                  : "Pitcher K/Outs, ER, H, BB and batter H+R+RBI props will appear here once the engine runs and market odds are available."
+              }
+            />
+          )}
+        </>
       ) : tab === "lab" ? (
         <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />
       ) : tab === "diagnostics" ? (

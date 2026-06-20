@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import type { MLBDiagnostics, MLBPickDetail, MLBPropDetail } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
+import { DateSelector } from "./DateSelector";
 
 // ── CSV export ─────────────────────────────────────────────────────────────
 
@@ -792,9 +794,21 @@ function PropDetailTable({ props }: { props: MLBPropDetail[] }) {
 
 export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
   const { picks, props } = data;
+  const [dateFilter, setDateFilter] = useState("all");
 
-  const N = gradedOnly(picks).length;
-  const Nprop = props.filter((p) => p.grade === "WIN" || p.grade === "LOSS").length;
+  // Dates newest-first so the dropdown lists most-recent at top
+  const diagDates = [...new Set([
+    ...picks.map((p) => p.gameDate),
+    ...props.map((p) => p.gameDate),
+  ].filter(Boolean) as string[])].sort().reverse();
+
+  const filteredPicks =
+    dateFilter === "all" ? picks : picks.filter((p) => p.gameDate === dateFilter);
+  const filteredProps =
+    dateFilter === "all" ? props : props.filter((p) => p.gameDate === dateFilter);
+
+  const N = gradedOnly(filteredPicks).length;
+  const Nprop = filteredProps.filter((p) => p.grade === "WIN" || p.grade === "LOSS").length;
 
   if (picks.length === 0 && props.length === 0) {
     return (
@@ -805,19 +819,19 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
     );
   }
 
-  // Breakdown segments — game picks only
+  // Breakdown segments — game picks only (use filteredPicks)
   const MARKETS = ["moneyline", "totals", "run_line", "safe_balanced", "safe_banker"];
   const EDGE_BUCKETS = ["<2%", "2-5%", "5%+"];
   const CONF_BUCKETS = ["<55%", "55-65%", "65-75%", "75%+"];
 
   const marketRows = MARKETS.map((m) =>
-    buildBRow(m, picks.filter((p) => p.market === m))
+    buildBRow(m, filteredPicks.filter((p) => p.market === m))
   );
   const edgeRows = EDGE_BUCKETS.map((b) =>
-    buildBRow(`Edge ${b}`, picks.filter((p) => p.edgeBucket === b))
+    buildBRow(`Edge ${b}`, filteredPicks.filter((p) => p.edgeBucket === b))
   );
   const confRows = CONF_BUCKETS.map((b) =>
-    buildBRow(b, picks.filter((p) => p.confBucket === b && p.calibratedConf !== null))
+    buildBRow(b, filteredPicks.filter((p) => p.confBucket === b && p.calibratedConf !== null))
   );
 
   return (
@@ -830,6 +844,9 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
         primary diagnostic signals — but all require 30+ samples per bucket to be meaningful.
       </div>
 
+      {/* Date filter */}
+      <DateSelector dates={diagDates} selected={dateFilter} onChange={setDateFilter} />
+
       {/* Sample-size banners */}
       <div className="space-y-2">
         <SampleBanner n={N} label="Game picks" />
@@ -837,10 +854,10 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
       </div>
 
       {/* Calibration check */}
-      <CalibrationTable picks={picks} />
+      <CalibrationTable picks={filteredPicks} />
 
       {/* Directional bias */}
-      <DirectionalBias picks={picks} />
+      <DirectionalBias picks={filteredPicks} />
 
       {/* Breakdowns */}
       <BreakdownTable rows={marketRows} title="Breakdown by Market" />
@@ -848,11 +865,11 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
       <BreakdownTable rows={confRows} title="Breakdown by Confidence Bucket" />
 
       {/* Props */}
-      <PropBreakdown props={props} />
+      <PropBreakdown props={filteredProps} />
 
       {/* Raw pick detail */}
-      <PickDetailTable picks={picks} />
-      <PropDetailTable props={props} />
+      <PickDetailTable picks={filteredPicks} />
+      <PropDetailTable props={filteredProps} />
     </div>
   );
 }
