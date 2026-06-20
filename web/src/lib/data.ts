@@ -781,5 +781,11 @@ export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {
       confidenceTier: r.confidence_tier,
       gameTime: game.start_time_toronto ?? null,
       };
+    })
+    .sort((a, b) => {
+      if (!a.gameTime && !b.gameTime) return 0;
+      if (!a.gameTime) return 1;
+      if (!b.gameTime) return -1;
+      return a.gameTime < b.gameTime ? -1 : a.gameTime > b.gameTime ? 1 : 0;
     });
 }
