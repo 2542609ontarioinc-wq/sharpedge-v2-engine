@@ -212,6 +212,58 @@ BATTER_MARKETS = [
     ("batter_hits_runs_rbis", "h_r_rbi", "solid"),
 ]
 
+# Maximum plausible single-game line per prop_market (column name in mlb_player_props).
+# Mirrors PROP_LINE_CAPS in sync_mlb_odds.py — second defence if bad odds slip through.
+PLAYER_PROP_CAPS = {
+    "outs_recorded": 30,
+    "strikeouts":    20,
+    "walks":          7,
+    "hits_allowed":  20,
+    "earned_runs":   12,
+    "h_r_rbi":       10,
+}
+
+# Same caps keyed by Odds API market_key for filtering raw prop_odds rows.
+_ODDS_LINE_CAPS = {
+    "pitcher_outs":          30,
+    "pitcher_strikeouts":    20,
+    "pitcher_walks":          7,
+    "pitcher_hits_allowed":  20,
+    "pitcher_earned_runs":   12,
+    "batter_hits_runs_rbis": 10,
+}
+
+
+def _cleanup_impossible_prop_lines():
+    """Delete mlb_player_props rows where market_line exceeds the single-game cap."""
+    total = 0
+    for market, cap in PLAYER_PROP_CAPS.items():
+        rows = (
+            supabase.table("mlb_player_props")
+            .select("player_name,prop_market,market_line,game_date")
+            .eq("prop_market", market)
+            .gt("market_line", cap)
+            .execute()
+            .data
+        )
+        if not rows:
+            continue
+        for r in rows:
+            print(
+                f"  [CLEANUP] {r['player_name']} {market} line={r['market_line']} "
+                f"game_date={r.get('game_date')} (cap={cap}) → deleted"
+            )
+        (
+            supabase.table("mlb_player_props")
+            .delete()
+            .eq("prop_market", market)
+            .gt("market_line", cap)
+            .execute()
+        )
+        total += len(rows)
+    if total:
+        print(f"  Cleaned up {total} impossible-line rows from mlb_player_props")
+
 
 def _build_prop_row(
     game_id, game_date, player_name, player_mlb_id, player_type,
@@ -372,10 +424,30 @@ def main():
         # Morning / full run: purge all upcoming props and regenerate from scratch.
         # Past game rows (game_date < today) are kept for grading.
         supabase.table("mlb_player_props").delete().gte("game_date", today.isoformat()).execute()
+        # Remove any existing past-game props whose market_line exceeded single-game caps
+        # (season totals / alt markets that leaked in before the odds-ingestion filter was added).
+        _cleanup_impossible_prop_lines()
 
     prop_odds = supabase.table("mlb_player_prop_odds").select("*").execute().data
     # Only odds with a real game_id are usable (null means the game wasn't in our games table)
     prop_odds = [o for o in prop_odds if o.get("game_id") is not None]
+    # Second-defence filter: reject any odds row whose line exceeds the single-game cap.
+    pre_filter = len(prop_odds)
+    prop_odds_filtered = []
+    odds_dropped = 0
+    for o in prop_odds:
+        cap = _ODDS_LINE_CAPS.get(o.get("market_key"))
+        if cap is not None and o.get("line") is not None:
+            try:
+                if float(o["line"]) > cap:
+                    odds_dropped += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
+        prop_odds_filtered.append(o)
+    prop_odds = prop_odds_filtered
+    if odds_dropped:
+        print(f"  [FILTER] Dropped {odds_dropped}/{pre_filter} prop odds rows with impossible lines")
     print(f"  Prop odds loaded: {len(prop_odds)} rows across "
           f"{len(set(o['game_id'] for o in prop_odds))} games")
 

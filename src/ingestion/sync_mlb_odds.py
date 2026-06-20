@@ -44,6 +44,17 @@ PROP_MARKET_KEYS = {
     "pitcher_walks",
     "batter_hits_runs_rbis",
 }
+
+# Maximum plausible single-game line for each prop market.
+# Lines above these are season totals or alt/futures markets — reject them.
+PROP_LINE_CAPS = {
+    "pitcher_outs":          30,
+    "pitcher_strikeouts":    20,
+    "pitcher_walks":          7,
+    "pitcher_hits_allowed":  20,
+    "pitcher_earned_runs":   12,
+    "batter_hits_runs_rbis": 10,
+}
 PER_EVENT_MARKETS = (
     "alternate_totals,alternate_spreads,"
     "pitcher_strikeouts,pitcher_outs,pitcher_earned_runs,"
@@ -243,13 +254,28 @@ def main():
         game_bookmakers = []
         prop_rows = []
 
+        filtered_prop_count = 0
         for bookmaker in alt_event.get("bookmakers", []):
             book_title = bookmaker.get("title")
             game_markets = []
             for market in bookmaker.get("markets", []):
                 mkt_key = market.get("key")
                 if mkt_key in PROP_MARKET_KEYS:
+                    cap = PROP_LINE_CAPS.get(mkt_key)
                     for outcome in market.get("outcomes", []):
+                        line_val = outcome.get("point")
+                        if cap is not None and line_val is not None:
+                            try:
+                                if float(line_val) > cap:
+                                    print(
+                                        f"  [FILTERED] {away}@{home} {mkt_key} "
+                                        f"{outcome.get('description')} line={line_val} "
+                                        f"(cap={cap}) — skipped (likely season total)"
+                                    )
+                                    filtered_prop_count += 1
+                                    continue
+                            except (TypeError, ValueError):
+                                pass
                         dec = outcome.get("price")
                         prop_rows.append({
                             "game_id": game_id,
@@ -270,6 +296,8 @@ def main():
                     game_markets.append(market)
             if game_markets:
                 game_bookmakers.append({**bookmaker, "markets": game_markets})
+        if filtered_prop_count:
+            print(f"  [{away}@{home}] Filtered {filtered_prop_count} out-of-range prop lines")
 
         alt_saved += _save_bookmakers(game_bookmakers, home, away, game_id)
         # Collect opening snapshot rows for alternate_totals/alternate_spreads.

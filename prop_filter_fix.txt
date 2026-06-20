@@ -1,0 +1,86 @@
+MLB PROP LINE FILTER FIX
+June 20, 2026
+================================================================================
+
+PROBLEM
+-------
+Bad prop lines with impossible single-game values were entering the system via
+the Odds API and flowing through to mlb_player_props, mlb_prop_grades, and
+mlb_prop_detail. These appear to be season totals or alternate/futures markets
+mislabeled as single-game props.
+
+Examples found in mlb_prop_detail before fix:
+  Sean Manaea  outs_recorded Under 81.5   (81.5 outs = ~27 innings — impossible)
+  Sean Manaea  strikeouts    Under 28.5   (28+ Ks in one start — season total)
+  Sean Manaea  hits_allowed  Under 27.5   (season-level hits total)
+  Sean Manaea  walks         Under 9.5    (9+ walks in one start — impossible)
+  Sean Manaea  earned_runs   Under 14.5   (season-level ERA accumulator)
+
+ROOT CAUSE
+----------
+sync_mlb_odds.py stored every outcome from the Odds API per-event call into
+mlb_player_prop_odds with no validation. generate_mlb_player_props.py then
+used the most-posted line as the consensus market_line, which could be a
+season total if that's what the majority of bookmakers posted.
+
+FIXES APPLIED
+-------------
+
+1. src/ingestion/sync_mlb_odds.py
+   Added PROP_LINE_CAPS dict and a check in the prop_rows builder.
+   Any outcome whose line exceeds the cap is logged and skipped before
+   being inserted into mlb_player_prop_odds.
+
+   Caps (single-game maxima):
+     pitcher_outs          → 30
+     pitcher_strikeouts    → 20
+     pitcher_hits_allowed  → 20
+     pitcher_earned_runs   → 12
+     pitcher_walks         →  7
+     batter_hits_runs_rbis → 10
+
+   Log format: [FILTERED] {away}@{home} {market} {player} line={val} (cap={cap}) — skipped
+   Summary per game: [{away}@{home}] Filtered N out-of-range prop lines
+
+2. src/models/generate_mlb_player_props.py
+   Two additions:
+
+   a) _cleanup_impossible_prop_lines() — runs at the start of every morning
+      (non-batter-only) run. Queries mlb_player_props for rows where
+      market_line exceeds the cap for that prop_market, logs each one, and
+      deletes them so the grader never sees them.
+
+      Caps (keyed by prop_market column name):
+        outs_recorded → 30
+        strikeouts    → 20
+        hits_allowed  → 20
+        earned_runs   → 12
+        walks         →  7
+        h_r_rbi       → 10
+
+   b) Second-defence filter on the prop_odds array after loading from
+      mlb_player_prop_odds. Rejects any row whose line exceeds the cap
+      before _consensus_line() can use it as a market line. Logs a summary
+      count if any rows were dropped.
+
+HISTORICAL CLEANUP (June 20, 2026 re-run)
+------------------------------------------
+5 bad rows deleted from mlb_player_props by _cleanup_impossible_prop_lines():
+  Sean Manaea  outs_recorded  line=81.5   game_date=2026-06-18  (cap=30)
+  Sean Manaea  strikeouts     line=28.5   game_date=2026-06-18  (cap=20)
+  Sean Manaea  hits_allowed   line=27.5   game_date=2026-06-18  (cap=20)
+  Sean Manaea  walks          line=9.5    game_date=2026-06-18  (cap=7)
+  Sean Manaea  earned_runs    line=14.5   game_date=2026-06-18  (cap=12)
+
+CONFIRMATION
+------------
+After re-running the full chain:
+  python -m src.models.generate_mlb_player_props
+  python -m src.grading.grade_mlb_prop_picks
+  python -m src.grading.build_mlb_prop_detail
+
+  grep for "81.5" in grader output → no matches
+  mlb_prop_detail rebuilt: 122 rows, all lines within single-game ranges
+
+The "Sean Manaea outs_recorded Under 81.5" line is confirmed gone from
+mlb_prop_grades and mlb_prop_detail.
