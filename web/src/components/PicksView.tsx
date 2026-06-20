@@ -15,6 +15,7 @@ import { EmptyState } from "./EmptyState";
 import { DateSelector } from "./DateSelector";
 import { useLiveScores } from "@/hooks/useLiveScores";
 import type { GameInfo } from "@/hooks/useLiveScores";
+import { useLivePlayerStats } from "@/hooks/useLivePlayerStats";
 
 // ─── Flip to false to remove the INTERNAL badge and make the tab public ─────
 const SUBSCRIBER_TAB_INTERNAL = true;
@@ -101,6 +102,7 @@ export function PicksView({
 
   // Always call at component level — hook runs for MLB, results unused when on soccer tab
   const liveState = useLiveScores(allMlbGames);
+  const livePlayerStats = useLivePlayerStats(liveState);
 
   const matchesTier = (tier: string | null) =>
     tierFilter === "all" || tier === tierFilter;
@@ -336,7 +338,7 @@ export function PicksView({
           {propsByGame.size > 0 ? (
             <div className="flex flex-col gap-3">
               {[...propsByGame.entries()].map(([gameId, props]) => (
-                <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} liveState={liveState} />
+                <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} liveState={liveState} livePlayerStats={livePlayerStats} />
               ))}
             </div>
           ) : (

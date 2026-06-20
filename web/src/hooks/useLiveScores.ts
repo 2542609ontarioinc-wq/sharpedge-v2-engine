@@ -17,6 +17,7 @@ export type LiveScore = {
   outs: number | null;
   isLive: boolean;
   gameStatus: string;
+  gamePk: number | null;   // MLB Stats API integer id — needed for boxscore fetch
 };
 
 const MLB_SCHEDULE = "https://statsapi.mlb.com/api/v1/schedule";
@@ -92,6 +93,7 @@ async function fetchDateScores(
         outs: ls.outs ?? null,
         isLive,
         gameStatus: detailedState,
+        gamePk: typeof g.gamePk === "number" ? g.gamePk : null,
       });
     }
   }
