@@ -532,6 +532,7 @@ type MLBPlayerPropRow = {
   game_id: string;
   player_name: string;
   player_type: string;
+  player_mlb_id: number | null;
   team_name: string | null;
   side: string | null;
   prop_market: string;
@@ -752,7 +753,7 @@ export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {
   const { data: rows, error } = await supabase
     .from("mlb_player_props")
     .select(
-      "game_id, player_name, player_type, team_name, side, prop_market, model_projection, market_line, pick_side, calibrated_over_prob, best_odds_decimal, best_odds_american, model_edge, edge_flag, confidence_note, confidence_tier"
+      "game_id, player_name, player_type, player_mlb_id, team_name, side, prop_market, model_projection, market_line, pick_side, calibrated_over_prob, best_odds_decimal, best_odds_american, model_edge, edge_flag, confidence_note, confidence_tier"
     )
     .gte("game_date", today)
     .order("confidence_tier", { ascending: true });
@@ -773,6 +774,7 @@ export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {
       awayTeam: game.away_team_name,
       playerName: r.player_name,
       playerType: r.player_type as "pitcher" | "batter",
+      playerMlbId: r.player_mlb_id ?? null,
       teamName: r.team_name,
       side: r.side,
       propMarket: r.prop_market,

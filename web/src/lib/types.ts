@@ -114,6 +114,7 @@ export type MLBPlayerProp = {
   awayTeam: string;
   playerName: string;
   playerType: "pitcher" | "batter";
+  playerMlbId: number | null;
   teamName: string | null;
   side: string | null;
   propMarket: string;

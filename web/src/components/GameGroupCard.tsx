@@ -5,6 +5,9 @@ import type { MLBSharpPick, SharpPick } from "@/lib/types";
 import { formatFirstPitch, formatKickoff, formatPercent, formatSignedPercent } from "@/lib/format";
 import { Badge, confidenceTierVariant } from "./Badge";
 import { ProbabilityBar } from "./ProbabilityBar";
+import { TeamLogo } from "./TeamLogo";
+import { LiveScoreModule } from "./LiveScoreModule";
+import type { LiveScore } from "@/hooks/useLiveScores";
 
 const TIER_ORDER: Record<string, number> = {
   "Bet of the Day": 0,
@@ -38,6 +41,7 @@ function formatOdds(decimal: number | null, american: number | null): string | n
 }
 
 // ── Soccer ────────────────────────────────────────────────────────────────────
+// DO NOT modify SoccerGameGroupCard or SoccerPickRow
 
 export function SoccerGameGroupCard({ picks }: { picks: SharpPick[] }) {
   const [open, setOpen] = useState(false);
@@ -128,11 +132,19 @@ function SoccerPickRow({ pick }: { pick: SharpPick }) {
 
 // ── MLB ───────────────────────────────────────────────────────────────────────
 
-export function MLBGameGroupCard({ picks }: { picks: MLBSharpPick[] }) {
+export function MLBGameGroupCard({
+  picks,
+  liveState,
+}: {
+  picks: MLBSharpPick[];
+  liveState?: Map<string, LiveScore>;
+}) {
   const [open, setOpen] = useState(false);
   const first = picks[0];
   const tier = topTierOf(picks.map((p) => p.confidenceTier));
   const isBOD = tier === "Bet of the Day";
+  const live = liveState?.get(first.gameId);
+  const isLive = live?.isLive ?? false;
 
   return (
     <div
@@ -146,13 +158,31 @@ export function MLBGameGroupCard({ picks }: { picks: MLBSharpPick[] }) {
         className="w-full p-5 text-left"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-ink">
-              {first.awayTeam} <span className="text-muted">@</span> {first.homeTeam}
-            </p>
-            <p className="mt-0.5 text-xs text-muted">{formatFirstPitch(first.gameTime)}</p>
+          <div className="min-w-0 flex-1">
+            {/* Team matchup with logos */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <TeamLogo team={first.awayTeam} size={20} />
+              <span className="text-sm font-medium text-ink">{first.awayTeam}</span>
+              <span className="text-muted text-xs">@</span>
+              <TeamLogo team={first.homeTeam} size={20} />
+              <span className="text-sm font-medium text-ink">{first.homeTeam}</span>
+            </div>
+            {/* Time row with live indicator */}
+            <div className="mt-0.5 flex items-center gap-2">
+              <p className="text-xs text-muted">{formatFirstPitch(first.gameTime)}</p>
+              {isLive && (
+                <span className="flex items-center gap-1">
+                  <span className="size-1.5 rounded-full bg-watch animate-pulse" />
+                  <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2 flex-wrap justify-end">
+            {/* MLB badge */}
+            <span className="rounded-full border border-border-strong/40 bg-bg-2 px-2 py-0.5 text-[10px] text-muted">
+              ⚾ MLB
+            </span>
             <span className="text-xs text-muted">
               {picks.length} pick{picks.length !== 1 ? "s" : ""}
             </span>
@@ -174,6 +204,16 @@ export function MLBGameGroupCard({ picks }: { picks: MLBSharpPick[] }) {
               <MLBPickRow key={pick.market} pick={pick} />
             ))}
           </div>
+          {/* Live score module — one per game, for the top pick */}
+          {live && picks[0] && (
+            <LiveScoreModule
+              live={live}
+              market={picks[0].market}
+              pick={picks[0].pick}
+              homeTeam={first.homeTeam}
+              awayTeam={first.awayTeam}
+            />
+          )}
           <p className="mt-3 text-[10px] leading-snug text-muted/50">
             Internal — tier is confidence-ranked, not proven to win more.
           </p>

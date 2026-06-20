@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import type { MLBPlayerProp, MLBSafeZonePick, MLBSharpPick } from "@/lib/types";
+import { useEffect, useState } from "react";
+import type { MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBSubscriberResults, MLBSubscriberSegment } from "@/lib/types";
+import { getMLBSubscriberResults } from "@/lib/data";
 import { DateSelector } from "./DateSelector";
 import { formatFirstPitch } from "@/lib/format";
 import { EmptyState } from "./EmptyState";
+import { TeamLogo } from "./TeamLogo";
+import { LiveScoreModule } from "./LiveScoreModule";
+import type { LiveScore } from "@/hooks/useLiveScores";
 
 // ─── Filter thresholds ──────────────────────────────────────────────────────
 const EDGE_MIN  = 3;   // min model edge % for picks that carry an edge signal
@@ -296,8 +300,11 @@ function PickRow({ pick }: { pick: SubPick }) {
 }
 
 // ─── Game card ──────────────────────────────────────────────────────────────
-function GameCard({ group }: { group: GameGroup }) {
+function GameCard({ group, liveState }: { group: GameGroup; liveState?: Map<string, LiveScore> }) {
   const hasBotD = group.picks.some((p) => p.tier === "Bet of the Day");
+  const live = liveState?.get(group.gameId);
+  const isLive = live?.isLive ?? false;
+  const topPick = group.picks[0];
   return (
     <div
       className={`rounded-2xl border bg-surface p-4 backdrop-blur ${
@@ -305,11 +312,24 @@ function GameCard({ group }: { group: GameGroup }) {
       }`}
     >
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-ink">
-            {group.awayTeam} <span className="text-muted">@</span> {group.homeTeam}
-          </p>
-          <p className="mt-0.5 text-xs text-muted">{formatFirstPitch(group.gameTime)}</p>
+        <div className="min-w-0 flex-1">
+          {/* Team row with logos */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <TeamLogo team={group.awayTeam} size={18} />
+            <span className="text-sm font-semibold text-ink">{group.awayTeam}</span>
+            <span className="text-muted text-xs">@</span>
+            <TeamLogo team={group.homeTeam} size={18} />
+            <span className="text-sm font-semibold text-ink">{group.homeTeam}</span>
+          </div>
+          <div className="mt-0.5 flex items-center gap-2">
+            <p className="text-xs text-muted">{formatFirstPitch(group.gameTime)}</p>
+            {isLive && (
+              <span className="flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-watch animate-pulse" />
+                <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
+              </span>
+            )}
+          </div>
         </div>
         <span className="shrink-0 rounded-full border border-border-strong/40 bg-bg-2 px-2.5 py-0.5 text-[10px] text-muted">
           {group.picks.length} play{group.picks.length !== 1 ? "s" : ""}
@@ -320,6 +340,98 @@ function GameCard({ group }: { group: GameGroup }) {
           <PickRow key={pick.key} pick={pick} />
         ))}
       </div>
+      {live && topPick && (
+        <LiveScoreModule
+          live={live}
+          market={topPick.source === "prop" ? "totals" : topPick.marketLabel.toLowerCase()}
+          pick={topPick.label}
+          homeTeam={group.homeTeam}
+          awayTeam={group.awayTeam}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Subscriber track record ────────────────────────────────────────────────
+
+const MIN_SAMPLE = 30; // show data-quality warning below this N
+
+function StatCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-center">
+      <p className="text-[10px] text-muted/55">{label}</p>
+      <p className="mt-0.5 text-sm font-bold text-ink">{value}</p>
+    </div>
+  );
+}
+
+function SegmentStats({
+  label,
+  seg,
+}: {
+  label: string;
+  seg: MLBSubscriberSegment | null;
+}) {
+  if (!seg || seg.pickCount === 0) {
+    return (
+      <div className="flex-1 rounded-xl border border-border/40 bg-bg-2/50 px-4 py-3 text-center">
+        <p className="text-xs font-semibold text-muted">{label}</p>
+        <p className="mt-1 text-[10px] text-muted/50">No graded picks yet</p>
+      </div>
+    );
+  }
+  const n      = seg.pickCount;
+  const wl     = `${seg.winCount}-${seg.lossCount}`;
+  const wr     = seg.winRate != null ? `${(seg.winRate * 100).toFixed(1)}%` : "—";
+  const roi    = seg.roiPercent != null ? `${seg.roiPercent > 0 ? "+" : ""}${seg.roiPercent.toFixed(1)}%` : "—";
+  const edge   = seg.avgEdge   != null ? `+${seg.avgEdge.toFixed(1)}%` : "—";
+  const prob   = seg.avgWinProb != null ? `${seg.avgWinProb.toFixed(1)}%` : "—";
+  const clv    = seg.avgClv    != null ? `${seg.avgClv > 0 ? "+" : ""}${seg.avgClv.toFixed(2)}%` : "(no data)";
+
+  return (
+    <div className="flex-1 rounded-xl border border-border/40 bg-bg-2/50 px-4 py-3">
+      <p className="mb-2 text-center text-xs font-semibold text-ink">{label}</p>
+      {n < MIN_SAMPLE && (
+        <p className="mb-2 rounded border border-watch/30 bg-watch/5 px-2 py-1 text-center text-[10px] text-watch">
+          INSUFFICIENT DATA (n={n} &lt; {MIN_SAMPLE}) — results not yet meaningful
+        </p>
+      )}
+      <div className="grid grid-cols-3 gap-3">
+        <StatCell label="Record (W-L)" value={wl} />
+        <StatCell label="Win %" value={wr} />
+        <StatCell label="ROI" value={roi} />
+        <StatCell label="Avg Edge" value={edge} />
+        <StatCell label="Avg Win%" value={prob} />
+        <StatCell label="Avg CLV" value={clv} />
+      </div>
+    </div>
+  );
+}
+
+function SubscriberTrackRecord({ results }: { results: MLBSubscriberResults | null }) {
+  if (!results) return null;
+
+  return (
+    <div className="mt-2 rounded-2xl border border-border bg-surface p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-sm font-bold text-ink">Subscriber Track Record</p>
+        <span className="rounded-sm bg-watch/20 px-1.5 py-0.5 text-[9px] font-bold text-watch">
+          INTERNAL
+        </span>
+      </div>
+
+      <p className="mb-3 text-[10px] leading-relaxed text-muted/70">
+        Performance of picks that qualified under the subscriber filter (edge ≥ +{EDGE_MIN}%,
+        win prob ≥ {PROB_MIN}%) across all graded game picks and player props.{" "}
+        <span className="font-semibold text-watch">CLV is the primary signal.</span>{" "}
+        Win% and ROI are secondary — favourites bias applies.
+      </p>
+
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <SegmentStats label="All Qualifying Plays" seg={results.all} />
+        <SegmentStats label="★ Bet of the Day" seg={results.betOfDay} />
+      </div>
     </div>
   );
 }
@@ -329,12 +441,19 @@ export function MLBSubscriberView({
   sharpPicks,
   safeZone,
   playerProps,
+  liveState,
 }: {
   sharpPicks: MLBSharpPick[];
   safeZone: MLBSafeZonePick[];
   playerProps: MLBPlayerProp[];
+  liveState?: Map<string, LiveScore>;
 }) {
   const [dateFilter, setDateFilter] = useState("all");
+  const [trackRecord, setTrackRecord] = useState<MLBSubscriberResults | null>(null);
+
+  useEffect(() => {
+    getMLBSubscriberResults().then(setTrackRecord).catch(() => setTrackRecord(null));
+  }, []);
 
   const allPicks: SubPick[] = [
     ...filterSharpPicks(sharpPicks),
@@ -399,7 +518,7 @@ export function MLBSubscriberView({
       ) : (
         <div className="flex flex-col gap-4">
           {groups.map((g) => (
-            <GameCard key={g.gameId} group={g} />
+            <GameCard key={g.gameId} group={g} liveState={liveState} />
           ))}
         </div>
       )}
@@ -410,6 +529,9 @@ export function MLBSubscriberView({
           {groups.length} game{groups.length !== 1 ? "s" : ""}
         </p>
       )}
+
+      {/* Track record — always shown regardless of date filter */}
+      <SubscriberTrackRecord results={trackRecord} />
     </div>
   );
 }

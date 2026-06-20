@@ -13,6 +13,8 @@ import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
 import { MLBSubscriberView } from "./MLBSubscriberView";
 import { EmptyState } from "./EmptyState";
 import { DateSelector } from "./DateSelector";
+import { useLiveScores } from "@/hooks/useLiveScores";
+import type { GameInfo } from "@/hooks/useLiveScores";
 
 // ─── Flip to false to remove the INTERNAL badge and make the tab public ─────
 const SUBSCRIBER_TAB_INTERNAL = true;
@@ -78,6 +80,27 @@ export function PicksView({
   const [mlbSharpDate, setMlbSharpDate] = useState("all");
   const [mlbSafeDate, setMlbSafeDate] = useState("all");
   const [mlbPropsDate, setMlbPropsDate] = useState("all");
+
+  // Build deduplicated game list for live score polling (all MLB tabs)
+  const allMlbGames: GameInfo[] = (() => {
+    const seen = new Map<string, GameInfo>();
+    for (const p of mlbSharpPicks) {
+      if (!seen.has(p.gameId))
+        seen.set(p.gameId, { gameId: p.gameId, homeTeam: p.homeTeam, awayTeam: p.awayTeam, gameTime: p.gameTime });
+    }
+    for (const p of mlbSafeZone) {
+      if (!seen.has(p.gameId))
+        seen.set(p.gameId, { gameId: p.gameId, homeTeam: p.homeTeam, awayTeam: p.awayTeam, gameTime: p.gameTime });
+    }
+    for (const p of mlbPlayerProps) {
+      if (!seen.has(p.gameId))
+        seen.set(p.gameId, { gameId: p.gameId, homeTeam: p.homeTeam, awayTeam: p.awayTeam, gameTime: p.gameTime });
+    }
+    return [...seen.values()];
+  })();
+
+  // Always call at component level — hook runs for MLB, results unused when on soccer tab
+  const liveState = useLiveScores(allMlbGames);
 
   const matchesTier = (tier: string | null) =>
     tierFilter === "all" || tier === tierFilter;
@@ -271,7 +294,7 @@ export function PicksView({
           {mlbGroups.length > 0 ? (
             <div className="flex flex-col gap-3">
               {mlbGroups.map((group) => (
-                <MLBGameGroupCard key={group[0].gameId} picks={group} />
+                <MLBGameGroupCard key={group[0].gameId} picks={group} liveState={liveState} />
               ))}
             </div>
           ) : (
@@ -293,7 +316,7 @@ export function PicksView({
           {filteredMlbSafeZone.length > 0 ? (
             <div className="grid gap-4 sm:grid-cols-2">
               {filteredMlbSafeZone.map((pick) => (
-                <MLBSafeZoneCard key={pick.gameId} pick={pick} />
+                <MLBSafeZoneCard key={pick.gameId} pick={pick} liveState={liveState} />
               ))}
             </div>
           ) : (
@@ -313,7 +336,7 @@ export function PicksView({
           {propsByGame.size > 0 ? (
             <div className="flex flex-col gap-3">
               {[...propsByGame.entries()].map(([gameId, props]) => (
-                <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} />
+                <MLBPlayerPropsCard key={gameId} gameId={gameId} props={props} liveState={liveState} />
               ))}
             </div>
           ) : (
@@ -332,6 +355,7 @@ export function PicksView({
           sharpPicks={mlbSharpPicks}
           safeZone={mlbSafeZone}
           playerProps={mlbPlayerProps}
+          liveState={liveState}
         />
       ) : tab === "lab" ? (
         <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />
