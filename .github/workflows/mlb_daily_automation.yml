@@ -114,6 +114,13 @@ jobs:
         run: |
           python -m src.ingestion.snap_mlb_odds_closing
 
+      - name: Refresh live game state (score/inning/outs, display-only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.ingestion.sync_mlb_live_state
+
       - name: Sync confirmed batting lineups (2-hour window)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -134,3 +141,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python -m src.models.generate_mlb_player_props --batter-only
+
+      - name: Grade newly-final games and rebuild detail/CLV/subscriber analytics
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m src.grading.grade_mlb_picks_incremental

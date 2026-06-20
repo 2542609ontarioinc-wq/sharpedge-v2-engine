@@ -3,6 +3,8 @@ import type {
   GradedPick,
   MarketStats,
   MLBDiagnostics,
+  MLBLivePickStatus,
+  MLBLiveState,
   MLBMarketStats,
   MLBModelAnalytics,
   MLBModelLabGame,
@@ -12,6 +14,8 @@ import type {
   MLBPropDetail,
   MLBSafeZonePick,
   MLBSharpPick,
+  MLBSubscriberResults,
+  MLBSubscriberSegment,
   MLBTrackRecord,
   SafeZonePick,
   SharpPick,
@@ -871,4 +875,171 @@ export async function getMLBDiagnostics(): Promise<MLBDiagnostics> {
       }));
 
   return { picks, props };
+}
+
+// ---------------------------------------------------------------------------
+// Subscriber track-record aggregates (from mlb_subscriber_results).
+// Returns gracefully if the table doesn't exist yet (SQL 089 not run).
+// ---------------------------------------------------------------------------
+type SubscriberResultRow = {
+  segment: string;
+  pick_count: number | null;
+  win_count: number | null;
+  loss_count: number | null;
+  win_rate: number | null;
+  units_profit: number | null;
+  roi_percent: number | null;
+  avg_edge: number | null;
+  avg_win_prob: number | null;
+  avg_clv: number | null;
+  clv_beat_rate: number | null;
+};
+
+function rowToSegment(r: SubscriberResultRow): MLBSubscriberSegment {
+  return {
+    pickCount:   r.pick_count   ?? 0,
+    winCount:    r.win_count    ?? 0,
+    lossCount:   r.loss_count   ?? 0,
+    winRate:     toNumber(r.win_rate),
+    unitsProfit: toNumber(r.units_profit),
+    roiPercent:  toNumber(r.roi_percent),
+    avgEdge:     toNumber(r.avg_edge),
+    avgWinProb:  toNumber(r.avg_win_prob),
+    avgClv:      toNumber(r.avg_clv),
+    clvBeatRate: toNumber(r.clv_beat_rate),
+  };
+}
+
+export async function getMLBSubscriberResults(): Promise<MLBSubscriberResults> {
+  const { data, error } = await supabase
+    .from("mlb_subscriber_results")
+    .select(
+      "segment, pick_count, win_count, loss_count, win_rate, units_profit, "
+      + "roi_percent, avg_edge, avg_win_prob, avg_clv, clv_beat_rate"
+    );
+
+  if (error || !data) return { all: null, betOfDay: null };
+
+  let all: MLBSubscriberSegment | null = null;
+  let betOfDay: MLBSubscriberSegment | null = null;
+
+  for (const r of data as unknown as SubscriberResultRow[]) {
+    if (r.segment === "all")        all      = rowToSegment(r);
+    if (r.segment === "bet_of_day") betOfDay = rowToSegment(r);
+  }
+
+  return { all, betOfDay };
+}
+
+// ---------------------------------------------------------------------------
+// Live game state (from mlb_live_state, written hourly by sync_mlb_live_state).
+// Display-only: never used to set or modify grades.
+// ---------------------------------------------------------------------------
+type MLBLiveStateRow = {
+  game_id: string;
+  home_score: number | null;
+  away_score: number | null;
+  inning: number | null;
+  inning_half: string | null;
+  outs: number | null;
+  game_status: string | null;
+  home_pitcher: string | null;
+  away_pitcher: string | null;
+  captured_at: string | null;
+};
+
+export async function getMLBLiveState(): Promise<Map<string, MLBLiveState>> {
+  const { data, error } = await supabase
+    .from("mlb_live_state")
+    .select(
+      "game_id, home_score, away_score, inning, inning_half, outs, "
+      + "game_status, home_pitcher, away_pitcher, captured_at"
+    );
+
+  const map = new Map<string, MLBLiveState>();
+  if (error || !data) return map;
+
+  for (const r of data as unknown as MLBLiveStateRow[]) {
+    map.set(r.game_id, {
+      gameId:      r.game_id,
+      homeScore:   r.home_score ?? null,
+      awayScore:   r.away_score ?? null,
+      inning:      r.inning ?? null,
+      inningHalf:  r.inning_half ?? null,
+      outs:        r.outs ?? null,
+      gameStatus:  r.game_status ?? null,
+      homePitcher: r.home_pitcher ?? null,
+      awayPitcher: r.away_pitcher ?? null,
+      capturedAt:  r.captured_at ?? null,
+    });
+  }
+  return map;
+}
+
+/**
+ * Compute a non-binding live pick status from current score.
+ * Display-only — never written to any grades table.
+ *
+ * Returns null when the game is not live or the pick type can't be assessed.
+ */
+export function computeLivePickStatus(
+  market: string,
+  pick: string,
+  homeTeam: string,
+  awayTeam: string,
+  live: MLBLiveState,
+): MLBLivePickStatus {
+  const status = (live.gameStatus ?? "").toLowerCase();
+  if (!status.includes("live") && !status.includes("in progress")) return null;
+
+  const homeScore = live.homeScore ?? 0;
+  const awayScore = live.awayScore ?? 0;
+  const total = homeScore + awayScore;
+  const m = market.toLowerCase();
+  const p = pick.toLowerCase().trim();
+
+  if (m === "moneyline" || m === "safe_balanced" || m === "safe_banker") {
+    const homeNorm = homeTeam.toLowerCase().trim();
+    const awayNorm = awayTeam.toLowerCase().trim();
+    const pickNorm = p;
+
+    // Determine if the pick is for the home or away team.
+    const isHome = homeNorm.includes(pickNorm) || pickNorm.includes(homeNorm.split(" ").at(-1) ?? "");
+    const isAway = awayNorm.includes(pickNorm) || pickNorm.includes(awayNorm.split(" ").at(-1) ?? "");
+
+    if (!isHome && !isAway) return null;
+    const pickScore  = isHome ? homeScore : awayScore;
+    const otherScore = isHome ? awayScore : homeScore;
+    if (pickScore > otherScore)  return "currently_winning";
+    if (pickScore < otherScore)  return "currently_losing";
+    return "too_close";
+  }
+
+  if (m === "totals") {
+    const mat = p.match(/^(over|under)\s+([\d.]+)$/);
+    if (!mat) return null;
+    const direction = mat[1];
+    const line = parseFloat(mat[2]);
+    if (direction === "over")  return total > line ? "currently_winning" : total === line ? "too_close" : "currently_losing";
+    if (direction === "under") return total < line ? "currently_winning" : total === line ? "too_close" : "currently_losing";
+    return null;
+  }
+
+  if (m === "run_line") {
+    // e.g. "New York Yankees -1.5" — the pick team must cover the spread.
+    const spreadMat = p.match(/^(.+?)\s+([-+][\d.]+)$/);
+    if (!spreadMat) return null;
+    const pickTeamPart = spreadMat[1].trim();
+    const spread = parseFloat(spreadMat[2]);
+
+    const homeNorm = homeTeam.toLowerCase();
+    const isHome = homeNorm.includes(pickTeamPart) || pickTeamPart.includes(homeNorm.split(" ").at(-1) ?? "");
+    const diff = isHome ? homeScore - awayScore : awayScore - homeScore;
+    const covers = diff + spread;
+    if (covers > 0)  return "currently_winning";
+    if (covers < 0)  return "currently_losing";
+    return "too_close";
+  }
+
+  return null;
 }

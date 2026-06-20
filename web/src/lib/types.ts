@@ -232,3 +232,38 @@ export type MLBDiagnostics = {
   picks: MLBPickDetail[];
   props: MLBPropDetail[];
 };
+
+export type MLBSubscriberSegment = {
+  pickCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number | null;    // fraction 0–1
+  unitsProfit: number | null;
+  roiPercent: number | null;
+  avgEdge: number | null;    // mean model edge %
+  avgWinProb: number | null; // mean win-probability % at pick time
+  avgClv: number | null;
+  clvBeatRate: number | null; // fraction 0–1
+};
+
+export type MLBSubscriberResults = {
+  all: MLBSubscriberSegment | null;
+  betOfDay: MLBSubscriberSegment | null;
+};
+
+// Live linescore state for a single game (from mlb_live_state, display-only).
+export type MLBLiveState = {
+  gameId: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  inning: number | null;
+  inningHalf: string | null;  // 'Top' | 'Bottom'
+  outs: number | null;
+  gameStatus: string | null;  // 'Live' | 'Final' | 'Preview' | 'Postponed' | etc.
+  homePitcher: string | null;
+  awayPitcher: string | null;
+  capturedAt: string | null;
+};
+
+// Transient per-pick live status — never persisted to grades.
+export type MLBLivePickStatus = "currently_winning" | "currently_losing" | "too_close" | null;
