@@ -109,6 +109,22 @@ export function MLBTrackRecordView({ trackRecord }: { trackRecord: MLBTrackRecor
 
   return (
     <div className="space-y-6">
+      {/* Prominent backtest warning — cannot be missed */}
+      <div className="rounded-2xl border-2 border-watch/60 bg-watch/10 px-5 py-4 text-sm leading-relaxed text-watch">
+        <p className="font-bold text-base mb-1">⚠ BACKTEST ONLY — NOT REAL PERFORMANCE</p>
+        <p>
+          These figures come from running the model over already-settled games. Backtest results
+          are <span className="font-bold">optimistically biased</span>: the model was tuned on
+          historical data, so it will look better here than it will in live operation. Do{" "}
+          <span className="font-bold">not</span> use these numbers to judge the model.
+        </p>
+        <p className="mt-2">
+          Real forward-looking performance accumulates in the live graded picks.
+          Judge the model by <span className="font-bold">live CLV and MAE</span> (visible in
+          the Diagnostics tab), not these backtest numbers.
+        </p>
+      </div>
+
       <div className="rounded-2xl border border-border/50 bg-white/[0.02] px-5 py-4 text-xs text-muted/80 leading-relaxed">
         Backtested predictions on settled MLB games. Accuracy = correct direction calls / total predictions.
         ROI assumes flat 1-unit stakes at average captured odds. Figures are averages across all backtest runs.

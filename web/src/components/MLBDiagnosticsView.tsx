@@ -3,6 +3,40 @@
 import type { MLBDiagnostics, MLBPickDetail, MLBPropDetail } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 
+// ── CSV export ─────────────────────────────────────────────────────────────
+
+type CsvCell = string | number | boolean | null | undefined;
+
+function downloadCsv(filename: string, headers: string[], rows: CsvCell[][]) {
+  const escape = (v: CsvCell): string => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"`
+      : s;
+  };
+  const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function CsvButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted transition-colors hover:border-border-strong hover:text-ink"
+    >
+      ↓ {label}
+    </button>
+  );
+}
+
 // Picks need 30+ per bucket before signals are meaningful.
 const MIN_RELIABLE = 30;
 // Below this in a bucket: "low N" flag but still show data.
@@ -474,11 +508,50 @@ function PickDetailTable({ picks }: { picks: MLBPickDetail[] }) {
   const sorted = [...picks].sort((a, b) =>
     (b.gameDate ?? "").localeCompare(a.gameDate ?? "")
   );
+
+  function handleDownload() {
+    const headers = [
+      "Date", "Away Team", "Home Team", "Market", "Pick", "Line",
+      "Proj Total", "Proj Home", "Proj Away",
+      "Conf %", "Edge %", "Odds",
+      "Home Score", "Away Score", "Actual Total", "Total Bias",
+      "Grade", "Units", "ROI %", "CLV %",
+    ];
+    const rows = sorted.map((p) => [
+      p.gameDate,
+      p.awayTeam,
+      p.homeTeam,
+      p.market,
+      p.pick,
+      p.pickLine,
+      p.modelProjTotal,
+      p.modelProjHome,
+      p.modelProjAway,
+      p.calibratedConf,
+      p.modelEdge,
+      p.oddsDecimal,
+      p.homeScore,
+      p.awayScore,
+      p.actualTotal,
+      p.totalBias,
+      p.grade,
+      p.unitsResult,
+      p.roiPercent,
+      p.clv,
+    ]);
+    downloadCsv("mlb_pick_detail.csv", headers, rows);
+  }
+
   return (
     <div>
-      <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">
-        All Graded Picks — Raw Detail
-      </h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-bold uppercase tracking-wide text-muted">
+          All Graded Picks — Raw Detail
+        </h3>
+        {sorted.length > 0 && (
+          <CsvButton onClick={handleDownload} label="Download CSV" />
+        )}
+      </div>
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[950px] text-xs">
           <thead>
@@ -592,11 +665,41 @@ function PropDetailTable({ props }: { props: MLBPropDetail[] }) {
   const sorted = [...props].sort((a, b) =>
     (b.gameDate ?? "").localeCompare(a.gameDate ?? "")
   );
+
+  function handleDownload() {
+    const headers = [
+      "Date", "Player", "Type", "Market",
+      "Side", "Line", "Projection", "Calibrated Prob %",
+      "Model Edge %", "Odds", "Actual", "Prop Bias",
+      "Grade", "Units",
+    ];
+    const rows = sorted.map((p) => [
+      p.gameDate,
+      p.playerName,
+      p.playerType,
+      p.propMarket,
+      p.pickSide,
+      p.marketLine,
+      p.modelProjection,
+      p.calibratedProb,
+      p.modelEdge,
+      p.bestOddsDecimal,
+      p.actualValue,
+      p.propBias,
+      p.grade,
+      p.unitsResult,
+    ]);
+    downloadCsv("mlb_prop_detail.csv", headers, rows);
+  }
+
   return (
     <div>
-      <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">
-        All Graded Props — Raw Detail
-      </h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-bold uppercase tracking-wide text-muted">
+          All Graded Props — Raw Detail
+        </h3>
+        <CsvButton onClick={handleDownload} label="Download CSV" />
+      </div>
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[820px] text-xs">
           <thead>
