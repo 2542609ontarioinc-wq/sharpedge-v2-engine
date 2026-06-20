@@ -35,6 +35,20 @@ SPORT_KEY = "baseball_mlb"
 MODEL_VERSION = "poisson_v2"
 BANKER_THRESHOLD = 80.0
 
+# Statuses that mean a game is settled — picks must never be rebuilt for these.
+# Rebuilding would find no odds (mlb_odds is purged daily) and overwrite REAL
+# edge/opening-novig with no-odds, destroying CLV inputs forever.
+_SETTLED_STATUSES = {
+    "ft", "aot", "f", "final", "game finished", "finished",
+    "postponed", "cancelled", "canceled", "suspended", "post",
+}
+
+
+def _is_settled(game: dict) -> bool:
+    status = (game.get("status") or "").lower()
+    period = (game.get("period") or "").lower()
+    return status in _SETTLED_STATUSES or period in _SETTLED_STATUSES
+
 TIER_BOD = "Bet of the Day"
 TIER_ELITE = "Elite"
 TIER_STANDARD = "Standard"
@@ -479,8 +493,45 @@ def main():
         .data
     )
 
+    # --- Layer 1: identify settled games so we never rebuild their picks ---
+    # sync_mlb_odds purges mlb_odds daily and only refetches upcoming games, so
+    # rebuilding a settled game's pick would find no odds and write no-odds/null
+    # over the original REAL edge and opening novig, destroying CLV inputs.
+    pred_game_ids = [p["game_id"] for p in preds if p.get("game_id")]
+    games_raw = (
+        supabase.table("games")
+        .select("id,status,period")
+        .in_("id", pred_game_ids)
+        .execute()
+        .data
+    )
+    settled_ids = {g["id"] for g in games_raw if _is_settled(g)}
+    if settled_ids:
+        print(f"  [Layer 1] Skipping {len(settled_ids)} settled games — picks already final")
+
+    # --- Layer 2: pre-load existing edge flags for non-destructive upsert ---
+    # Never downgrade a row that already has real odds (REAL/suspect) to no-odds.
+    # This is a backstop in case a game slips through Layer 1.
+    existing_fp = (
+        supabase.table("mlb_final_predictions")
+        .select("game_id,edge_flag")
+        .execute()
+        .data
+    )
+    existing_fp_flags = {r["game_id"]: r.get("edge_flag") for r in existing_fp}
+
+    existing_sz = (
+        supabase.table("mlb_safe_zone")
+        .select("game_id,balanced_edge_flag")
+        .execute()
+        .data
+    )
+    existing_sz_flags = {r["game_id"]: r.get("balanced_edge_flag") for r in existing_sz}
+
     seen = set()
     skipped = 0
+    skipped_settled = 0
+    skipped_downgrade = 0
 
     # --- Pass 1: collect all rows ---
     fp_rows = []
@@ -491,6 +542,11 @@ def main():
         if not gid or gid in seen:
             continue
         seen.add(gid)
+
+        # Layer 1: skip settled games entirely
+        if gid in settled_ids:
+            skipped_settled += 1
+            continue
 
         home = pred["home_team_name"]
         away = pred["away_team_name"]
@@ -616,13 +672,36 @@ def main():
             f"cal={fp_row['calibrated_confidence']}% edge={fp_row['model_edge']}% [{fp_row['edge_flag']}] | "
             f"SAFE: {sz_label}"
         )
-        supabase.table("mlb_final_predictions").upsert(fp_row, on_conflict="game_id").execute()
-        saved_fp += 1
+        # Layer 2: never downgrade an existing REAL/suspect row to no-odds.
+        # A game that slips through Layer 1 (status not yet updated in games table)
+        # would otherwise overwrite real opening edge+novig with nulls.
+        fp_existing = existing_fp_flags.get(gid)
+        if fp_existing in ("REAL", "suspect") and fp_row["edge_flag"] == "no-odds":
+            print(
+                f"  [Layer 2] SKIP fp overwrite {fp_row['home_team_name']} vs "
+                f"{fp_row['away_team_name']} — existing={fp_existing} new=no-odds"
+            )
+            skipped_downgrade += 1
+        else:
+            supabase.table("mlb_final_predictions").upsert(fp_row, on_conflict="game_id").execute()
+            saved_fp += 1
 
-        supabase.table("mlb_safe_zone").upsert(sz_by_game[gid], on_conflict="game_id").execute()
-        saved_sz += 1
+        sz_existing = existing_sz_flags.get(gid)
+        if sz_existing in ("REAL", "suspect") and sz_by_game[gid].get("balanced_edge_flag") == "no-odds":
+            print(
+                f"  [Layer 2] SKIP sz overwrite {fp_row['home_team_name']} vs "
+                f"{fp_row['away_team_name']} — existing={sz_existing} new=no-odds"
+            )
+        else:
+            supabase.table("mlb_safe_zone").upsert(sz_by_game[gid], on_conflict="game_id").execute()
+            saved_sz += 1
 
-    print(f"\n✅ MLB final picks: {saved_fp} | Safe Zones: {saved_sz} | skipped: {skipped}")
+    print(
+        f"\n✅ MLB final picks: {saved_fp} written | {saved_sz} safe zones | "
+        f"{skipped_settled} settled skipped (Layer 1) | "
+        f"{skipped_downgrade} downgrade blocked (Layer 2) | "
+        f"{skipped} no candidates"
+    )
 
 
 if __name__ == "__main__":
