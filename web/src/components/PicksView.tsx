@@ -10,11 +10,15 @@ import { MLBTrackRecordView } from "./MLBTrackRecordView";
 import { MLBModelLabView } from "./MLBModelLabView";
 import { MLBDiagnosticsView } from "./MLBDiagnosticsView";
 import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
+import { MLBSubscriberView } from "./MLBSubscriberView";
 import { EmptyState } from "./EmptyState";
 import { DateSelector } from "./DateSelector";
 
+// ─── Flip to false to remove the INTERNAL badge and make the tab public ─────
+const SUBSCRIBER_TAB_INTERNAL = true;
+
 type Sport = "soccer" | "mlb";
-type Tab = "sharp" | "safe" | "record" | "props" | "lab" | "diagnostics";
+type Tab = "sharp" | "safe" | "record" | "props" | "subscriber" | "lab" | "diagnostics";
 type TierFilter = "all" | "Bet of the Day" | "Elite" | "Standard";
 
 const TIER_FILTERS: { value: TierFilter; label: string }[] = [
@@ -172,6 +176,16 @@ export function PicksView({
           </TabButton>
         )}
         {sport === "mlb" && (
+          <TabButton active={tab === "subscriber"} onClick={() => setTab("subscriber")}>
+            Subscriber
+            {SUBSCRIBER_TAB_INTERNAL && (
+              <span className="ml-1.5 rounded-sm bg-watch/20 px-1 py-px text-[9px] font-bold text-watch">
+                INTERNAL
+              </span>
+            )}
+          </TabButton>
+        )}
+        {sport === "mlb" && (
           <TabButton active={tab === "lab"} onClick={() => setTab("lab")}>
             Model Lab
             <span className="ml-1.5 rounded-sm bg-watch/20 px-1 py-px text-[9px] font-bold text-watch">
@@ -313,6 +327,12 @@ export function PicksView({
             />
           )}
         </>
+      ) : tab === "subscriber" ? (
+        <MLBSubscriberView
+          sharpPicks={mlbSharpPicks}
+          safeZone={mlbSafeZone}
+          playerProps={mlbPlayerProps}
+        />
       ) : tab === "lab" ? (
         <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />
       ) : tab === "diagnostics" ? (
