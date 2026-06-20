@@ -1,0 +1,43 @@
+MLB Workflow Dispatch Fix — 2026-06-20
+======================================
+
+Commit: 7ec4095 ("Fix MLB lineup parsing and hourly workflow reliability")
+
+Changes made to .github/workflows/mlb_daily_automation.yml:
+
+1. Added repository_dispatch trigger with types: [hourly-mlb-refresh]
+   — cron-job.org POSTs this event type hourly during game windows.
+   — GitHub returns 204 regardless of whether a workflow matches;
+     before this commit every ping was silently dropped.
+
+2. refresh-batter-props if: condition updated to also run on repository_dispatch
+   (alongside the fallback schedule crons 0 14-23 * * * and 0 0-3 * * *).
+
+3. run-mlb-engine if: condition left unchanged — it does NOT run on
+   repository_dispatch, only on the 8 AM cron or manual workflow_dispatch,
+   so the external hourly ping only fires the cheap lineup refresh.
+
+Final on: block
+---------------
+on:
+  repository_dispatch:
+    types: [hourly-mlb-refresh]
+  schedule:
+    # 8:00 AM UTC = ~4:00 AM Toronto (EDT) — morning full-engine run
+    - cron: "0 8 * * *"
+    # Hourly 14:00–23:00 UTC = 10 AM–7 PM ET — batter props for afternoon/evening games
+    - cron: "0 14-23 * * *"
+    # Hourly 00:00–03:00 UTC = 8 PM–11 PM ET — batter props for late-night games
+    - cron: "0 0-3 * * *"
+  workflow_dispatch:
+
+Job if: conditions
+------------------
+run-mlb-engine:
+  if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * *'
+
+refresh-batter-props:
+  if: >
+    github.event_name == 'repository_dispatch' ||
+    github.event.schedule == '0 14-23 * * *' ||
+    github.event.schedule == '0 0-3 * * *'

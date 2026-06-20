@@ -1,0 +1,90 @@
+MLB Grading Detail + Diagnostics Layer — 2026-06-20
+=====================================================
+
+Commit: d482f04 ("MLB grading-detail + diagnostics layer")
+
+SQL TO RUN IN SUPABASE
+----------------------
+sql/086_mlb_pick_detail.sql
+
+Creates two tables:
+  mlb_pick_detail   — enriched per-pick row (game picks)
+  mlb_prop_detail   — enriched per-prop row (player props)
+Run once in Supabase; the next grader run will populate both.
+
+WHAT WAS BUILT
+--------------
+
+Part 1 — Per-pick detail storage (grade time)
+
+  src/grading/build_mlb_pick_detail.py
+    Joins mlb_pick_grades + mlb_run_predictions (prefers poisson_v4_lineup,
+    falls back v7→v6→v5→v3→v2) + mlb_clv_tracking + games into one row.
+    New fields added vs raw grade table:
+      game_date      — from games table
+      pick_line      — numeric threshold parsed from pick string (e.g. 8.5)
+      pick_side      — 'home'/'away'/'over'/'under'
+      is_home_pick   — boolean for team-based markets
+      is_over        — boolean for totals-type picks
+      is_favorite    — true when odds_decimal < 2.0
+      model_proj_total / _home / _away — from run predictions
+      total_bias     — model_proj_total minus actual_total (+ = ran too high)
+      edge_bucket    — '<2%', '2-5%', '5%+'
+      conf_bucket    — '<55%', '55-65%', '65-75%', '75%+'
+      clv / beat_close — from mlb_clv_tracking
+
+  src/grading/build_mlb_prop_detail.py
+    Joins mlb_prop_grades + mlb_player_props.
+    Adds: model_projection, calibrated_prob, model_edge, prop_bias
+    (model_projection minus actual_value; + = projected too high).
+
+  src/models/grade_mlb_results.py
+    Added Steps 5 & 6 to call both builders after each grading run.
+    No other changes to this file.
+
+Part 2 — Breakdown analytics (computed in the web from raw rows)
+
+  web/src/components/MLBDiagnosticsView.tsx (new)
+    Breakdowns computed client-side from mlb_pick_detail / mlb_prop_detail:
+      By market:           moneyline, totals, run_line, safe_balanced, safe_banker
+      By edge bucket:      <2%, 2-5%, 5%+
+      By confidence bucket:<55%, 55-65%, 65-75%, 75%+
+      Props by market:     strikeouts, outs_recorded, earned_runs,
+                           hits_allowed, walks, h_r_rbi
+    Each row shows: N, W-L, W%, ROI/pick, Avg Bias, Avg CLV, WATCH flag.
+
+Part 3 — "Where it breaks" diagnostics (MLB → Diagnostics tab, INTERNAL)
+
+  Sections in MLBDiagnosticsView:
+    1. Sample-size banner — amber INSUFFICIENT DATA warning when N < 30 per bucket.
+       Always shown. Every section shows N.
+    2. Calibration check — confidence bucket → predicted% vs actual hit% → delta.
+       Flags "WATCH — overconfident" when delta < -5%.
+    3. Directional bias (totals) — avg model projection vs avg actual total.
+       Labels as NEUTRAL / TOO HIGH / TOO LOW with run magnitude.
+    4. Breakdown tables (market / edge / confidence buckets).
+       WATCH flag when N >= 5 and W% < 45% or |avg bias| > 1.5 runs.
+    5. Props breakdown by market with prop_bias column.
+    6. Scrollable raw-detail tables — all graded game picks and props
+       with line, projection, actual, bias, confidence, edge, CLV, grade.
+
+  Diagnostic disclaimer shown at top: "WATCH — nothing here changes picks,
+  weights, or model output. W% and ROI are favorites-biased."
+
+Web plumbing:
+  web/src/lib/types.ts         — added MLBPickDetail, MLBPropDetail, MLBDiagnostics
+  web/src/lib/data.ts          — added getMLBDiagnostics() (graceful empty on missing table)
+  web/src/components/PicksView.tsx — added 'diagnostics' tab (MLB only, INTERNAL badge)
+  web/src/app/page.tsx         — fetches and passes mlbDiagnostics
+
+PREDICTION LOGIC — CONFIRMED UNCHANGED
+---------------------------------------
+The following files were NOT modified:
+  src/models/generate_mlb_run_predictions.py  (Poisson model)
+  src/models/build_mlb_final_picks.py         (pick selection + calibration)
+  src/models/build_mlb_model_picks.py         (per-model shadow picks)
+  src/analytics/build_mlb_model_analytics.py  (model analytics)
+  All soccer files
+
+This is a display/measurement layer only. No pick, weight, or model output
+was changed. The detail tables are rebuilt from already-graded data.
