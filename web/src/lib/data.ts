@@ -2,11 +2,14 @@ import { supabase } from "./supabase";
 import type {
   GradedPick,
   MarketStats,
+  MLBDiagnostics,
   MLBMarketStats,
   MLBModelAnalytics,
   MLBModelLabGame,
   MLBModelVersionData,
+  MLBPickDetail,
   MLBPlayerProp,
+  MLBPropDetail,
   MLBSafeZonePick,
   MLBSharpPick,
   MLBTrackRecord,
@@ -788,4 +791,84 @@ export async function getMLBPlayerProps(): Promise<MLBPlayerProp[]> {
       if (!b.gameTime) return -1;
       return a.gameTime < b.gameTime ? -1 : a.gameTime > b.gameTime ? 1 : 0;
     });
+}
+
+// ---------------------------------------------------------------------------
+// MLB Diagnostics — per-pick detail + prop detail for model analysis
+// Returns empty arrays gracefully if tables don't exist yet (SQL 086 not run).
+// ---------------------------------------------------------------------------
+export async function getMLBDiagnostics(): Promise<MLBDiagnostics> {
+  const [picksRes, propsRes] = await Promise.all([
+    supabase
+      .from("mlb_pick_detail")
+      .select("*")
+      .order("game_date", { ascending: false }),
+    supabase
+      .from("mlb_prop_detail")
+      .select("*")
+      .order("game_date", { ascending: false }),
+  ]);
+
+  const picks: MLBPickDetail[] = picksRes.error
+    ? []
+    : (picksRes.data ?? []).map((r) => ({
+        gameId: r.game_id,
+        gameDate: r.game_date ?? null,
+        homeTeam: r.home_team ?? "",
+        awayTeam: r.away_team ?? "",
+        market: r.market ?? "",
+        pick: r.pick ?? "",
+        pickLine: toNumber(r.pick_line),
+        pickSide: r.pick_side ?? null,
+        isHomePick: r.is_home_pick ?? null,
+        isOver: r.is_over ?? null,
+        isFavorite: r.is_favorite ?? null,
+        modelProjTotal: toNumber(r.model_proj_total),
+        modelProjHome: toNumber(r.model_proj_home),
+        modelProjAway: toNumber(r.model_proj_away),
+        calibratedConf: toNumber(r.calibrated_conf),
+        rawConfidence: toNumber(r.raw_confidence),
+        modelEdge: toNumber(r.model_edge),
+        edgeBucket: r.edge_bucket ?? null,
+        confBucket: r.conf_bucket ?? null,
+        oddsDecimal: toNumber(r.odds_decimal),
+        edgeFlag: r.edge_flag ?? null,
+        noOdds: r.no_odds ?? false,
+        homeScore: r.home_score ?? null,
+        awayScore: r.away_score ?? null,
+        actualTotal: r.actual_total ?? null,
+        actualDiff: r.actual_diff ?? null,
+        totalBias: toNumber(r.total_bias),
+        grade: r.grade ?? null,
+        unitsResult: toNumber(r.units_result),
+        roiPercent: toNumber(r.roi_percent),
+        clv: toNumber(r.clv),
+        beatClose: r.beat_close ?? null,
+        gradedAt: r.graded_at ?? null,
+      }));
+
+  const props: MLBPropDetail[] = propsRes.error
+    ? []
+    : (propsRes.data ?? []).map((r) => ({
+        gameId: r.game_id,
+        gameDate: r.game_date ?? null,
+        playerName: r.player_name ?? null,
+        playerMlbId: r.player_mlb_id ?? null,
+        playerType: r.player_type ?? null,
+        propMarket: r.prop_market ?? "",
+        marketLine: toNumber(r.market_line),
+        pickSide: r.pick_side ?? null,
+        modelProjection: toNumber(r.model_projection),
+        calibratedProb: toNumber(r.calibrated_prob),
+        modelEdge: toNumber(r.model_edge),
+        bestOddsDecimal: toNumber(r.best_odds_decimal),
+        edgeFlag: r.edge_flag ?? null,
+        actualValue: toNumber(r.actual_value),
+        propBias: toNumber(r.prop_bias),
+        grade: r.grade ?? null,
+        unitsResult: toNumber(r.units_result),
+        gradedAt: r.graded_at ?? null,
+      }));
+
+  return { picks, props };
 }

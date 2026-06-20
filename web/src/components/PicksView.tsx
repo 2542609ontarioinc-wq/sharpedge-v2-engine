@@ -1,18 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import type { MLBModelAnalytics, MLBModelLabGame, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
+import type { MLBDiagnostics, MLBModelAnalytics, MLBModelLabGame, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBTrackRecord, SafeZonePick, SharpPick, TrackRecord } from "@/lib/types";
 import { SoccerGameGroupCard, MLBGameGroupCard } from "./GameGroupCard";
 import { SafeZoneCard } from "./SafeZoneCard";
 import { TrackRecordView } from "./TrackRecordView";
 import { MLBSafeZoneCard } from "./MLBSafeZoneCard";
 import { MLBTrackRecordView } from "./MLBTrackRecordView";
 import { MLBModelLabView } from "./MLBModelLabView";
+import { MLBDiagnosticsView } from "./MLBDiagnosticsView";
 import { MLBPlayerPropsCard } from "./MLBPlayerPropsCard";
 import { EmptyState } from "./EmptyState";
 
 type Sport = "soccer" | "mlb";
-type Tab = "sharp" | "safe" | "record" | "props" | "lab";
+type Tab = "sharp" | "safe" | "record" | "props" | "lab" | "diagnostics";
 type TierFilter = "all" | "Bet of the Day" | "Elite" | "Standard";
 
 const TIER_FILTERS: { value: TierFilter; label: string }[] = [
@@ -46,6 +47,7 @@ export function PicksView({
   mlbPlayerProps,
   mlbModelLab,
   mlbModelAnalytics,
+  mlbDiagnostics,
 }: {
   sharpPicks: SharpPick[];
   safeZone: SafeZonePick[];
@@ -56,6 +58,7 @@ export function PicksView({
   mlbPlayerProps: MLBPlayerProp[];
   mlbModelLab: MLBModelLabGame[];
   mlbModelAnalytics: MLBModelAnalytics[];
+  mlbDiagnostics: MLBDiagnostics;
 }) {
   const [sport, setSport] = useState<Sport>("soccer");
   const [tab, setTab] = useState<Tab>("sharp");
@@ -135,6 +138,14 @@ export function PicksView({
         {sport === "mlb" && (
           <TabButton active={tab === "lab"} onClick={() => setTab("lab")}>
             Model Lab
+            <span className="ml-1.5 rounded-sm bg-watch/20 px-1 py-px text-[9px] font-bold text-watch">
+              INTERNAL
+            </span>
+          </TabButton>
+        )}
+        {sport === "mlb" && (
+          <TabButton active={tab === "diagnostics"} onClick={() => setTab("diagnostics")}>
+            Diagnostics
             <span className="ml-1.5 rounded-sm bg-watch/20 px-1 py-px text-[9px] font-bold text-watch">
               INTERNAL
             </span>
@@ -249,6 +260,8 @@ export function PicksView({
         )
       ) : tab === "lab" ? (
         <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />
+      ) : tab === "diagnostics" ? (
+        <MLBDiagnosticsView data={mlbDiagnostics} />
       ) : (
         <MLBTrackRecordView trackRecord={mlbTrackRecord} />
       )}

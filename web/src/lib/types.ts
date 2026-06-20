@@ -168,3 +168,67 @@ export type MLBModelAnalytics = {
   roiPercent: number | null;
   avgClv: number | null;
 };
+
+// Enriched per-pick diagnostic row (from mlb_pick_detail).
+export type MLBPickDetail = {
+  gameId: string;
+  gameDate: string | null;
+  homeTeam: string;
+  awayTeam: string;
+  market: string;
+  pick: string;
+  pickLine: number | null;
+  pickSide: string | null;
+  isHomePick: boolean | null;
+  isOver: boolean | null;
+  isFavorite: boolean | null;
+  modelProjTotal: number | null;
+  modelProjHome: number | null;
+  modelProjAway: number | null;
+  calibratedConf: number | null;  // percentage, 50–100 scale
+  rawConfidence: number | null;
+  modelEdge: number | null;
+  edgeBucket: string | null;       // '<2%', '2-5%', '5%+'
+  confBucket: string | null;       // '<55%', '55-65%', '65-75%', '75%+'
+  oddsDecimal: number | null;
+  edgeFlag: string | null;
+  noOdds: boolean;
+  homeScore: number | null;
+  awayScore: number | null;
+  actualTotal: number | null;
+  actualDiff: number | null;
+  totalBias: number | null;        // model_proj_total - actual_total; positive = ran too high
+  grade: "WIN" | "LOSS" | "VOID" | null;
+  unitsResult: number | null;
+  roiPercent: number | null;
+  clv: number | null;
+  beatClose: boolean | null;
+  gradedAt: string | null;
+};
+
+// Enriched per-prop diagnostic row (from mlb_prop_detail).
+export type MLBPropDetail = {
+  gameId: string;
+  gameDate: string | null;
+  playerName: string | null;
+  playerMlbId: number | null;
+  playerType: "pitcher" | "batter" | null;
+  propMarket: string;
+  marketLine: number | null;
+  pickSide: "Over" | "Under" | null;
+  modelProjection: number | null;
+  calibratedProb: number | null;
+  modelEdge: number | null;
+  bestOddsDecimal: number | null;
+  edgeFlag: string | null;
+  actualValue: number | null;
+  propBias: number | null;         // model_projection - actual_value; positive = projected too high
+  grade: "WIN" | "LOSS" | "VOID" | null;
+  unitsResult: number | null;
+  gradedAt: string | null;
+};
+
+export type MLBDiagnostics = {
+  picks: MLBPickDetail[];
+  props: MLBPropDetail[];
+};

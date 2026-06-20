@@ -15,6 +15,8 @@ from supabase import create_client
 from src.config.settings import SUPABASE_SERVICE_KEY, SUPABASE_URL
 from src.grading.grade_mlb_picks import main as _grade_picks
 from src.grading.grade_mlb_prop_picks import main as _grade_prop_picks
+from src.grading.build_mlb_pick_detail import main as _build_pick_detail
+from src.grading.build_mlb_prop_detail import main as _build_prop_detail
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -117,6 +119,12 @@ def main() -> None:
         .data
     )
     _print_prop_summary(prop_rows)
+
+    print("\n=== Step 5: build enriched game pick detail (diagnostics) ===")
+    _build_pick_detail()
+
+    print("\n=== Step 6: build enriched prop detail (diagnostics) ===")
+    _build_prop_detail()
 
 
 if __name__ == "__main__":
