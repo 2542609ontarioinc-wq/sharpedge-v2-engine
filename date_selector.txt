@@ -1,0 +1,66 @@
+MLB DATE SELECTOR — CHANGE SUMMARY
+June 20, 2026
+Commit: 3caeb24 (main)
+================================================================================
+
+FEATURE
+-------
+Added an independent per-tab date dropdown to every MLB tab: Sharp Picks,
+Safe Zone, Player Props, Model Lab, and Diagnostics. Selecting a date filters
+the displayed data to only that game date. Each tab keeps its own selection
+independently. Client-side only — no backend or API changes.
+
+FILES CHANGED
+-------------
+
+1. web/src/components/DateSelector.tsx  (new)
+   Shared client component used by all five MLB tabs.
+   - fmtDateOption(d): formats "2026-06-20" → "Fri, Jun 20"
+   - DateSelector: styled <select> dropdown with "All dates" as default.
+     Returns null (hidden) when the data contains only one distinct date,
+     so the control only appears when it's useful.
+
+2. web/src/components/PicksView.tsx
+   - Added gameDateToronto(gameTime): extracts YYYY-MM-DD from an ISO
+     game-time string using the America/Toronto timezone (matches the
+     engine's game_date column convention).
+   - Three independent date state vars: mlbSharpDate, mlbSafeDate,
+     mlbPropsDate (all default "all").
+   - Distinct date lists derived from each tab's full unfiltered data so
+     the dropdown always lists every available date regardless of selection.
+   - Filtered arrays (filteredMlbSharpPicks, filteredMlbSafeZone,
+     filteredMlbPlayerProps) feed mlbGroups, propsByGame, and the tab
+     badge counts.
+   - DateSelector rendered above content in Sharp Picks, Safe Zone, and
+     Player Props MLB sections. Soccer tabs are unchanged.
+   - Empty-state subtitles updated to hint "Try a different date or select
+     'All dates'" when a date filter is active and returns no results.
+
+3. web/src/components/MLBModelLabView.tsx
+   - Added "use client" directive (needed for useState).
+   - Single dateFilter state scoped to the game-picks section only.
+   - gameDate() helper extracts Toronto date from MLBModelLabGame.gameTime.
+   - Distinct gameDates list + filteredGames computed from it.
+   - Model Scoreboard (aggregate analytics) is NOT filtered — it shows
+     all historical data regardless of the date selector.
+   - Divergence count in the banner reflects the filtered game set.
+
+4. web/src/components/MLBDiagnosticsView.tsx
+   - Single dateFilter state.
+   - Distinct dates derived from BOTH picks and props game dates,
+     sorted newest-first so the dropdown lists the most recent date first.
+   - filteredPicks and filteredProps flow into every sub-component:
+     CalibrationTable, DirectionalBias, all three BreakdownTables,
+     PropBreakdown, PickDetailTable, PropDetailTable.
+   - Sample-size banners (N= counts) reflect filtered data.
+   - "No graded data" EmptyState still checks raw (unfiltered) data so
+     it only appears when the database tables are genuinely empty.
+
+COMMIT CONFIRMATION
+-------------------
+Branch: main
+Commit: 3caeb24
+Message: Add per-tab date selector to all MLB tabs (Sharp, Safe Zone, Props, Model Lab, Diagnostics)
+Files:   4 changed, 202 insertions(+), 62 deletions(-)
+Remote:  pushed to origin/main ✓
+Build:   next build — compiled successfully, TypeScript clean, no errors

@@ -1,0 +1,141 @@
+SharpEdge — Full Preview Build Summary
+=======================================
+Date: 2026-06-22
+Branch: main (commit 257f028)
+
+FILES CREATED
+-------------
+web/src/components/LandingAdminPreview.tsx  — Client component: admin subscriber preview with live hooks
+
+FILES MODIFIED
+--------------
+web/src/app/landing/page.tsx                — Date fix, ADMIN_PREVIEW flag, searchParams, extra data fetch
+web/src/components/LandingPage.tsx          — dateLabel support, adminData prop, LandingAdminPreview render
+web/src/app/manifest.ts                     — theme_color → red (#ff5c6c), name → "SharpEdge"
+web/src/app/layout.tsx                      — viewport themeColor → #ff5c6c
+web/src/app/icon.tsx                        — Red "SE" favicon (32x32)
+web/src/app/apple-icon.tsx                  — Red "SE ⚾" apple-touch-icon (180x180)
+web/src/app/icons/[size]/route.tsx          — Red "SE ⚾" PWA icons (192x192, 512x512)
+
+No pipeline, grading, model math, or soccer logic touched.
+
+─────────────────────────────────────────────────────────────────────────────
+PART 1 — FREE PICK DATE FIX
+─────────────────────────────────────────────────────────────────────────────
+Problem: landing page showed June 23 pick when today was June 22. The old
+selectFeaturedPick() did not filter by today's date — getMLBSharpPicks()
+returns today + future games (game_date >= today), so future games leaked in.
+
+Fix: 4-pass waterfall in selectFeaturedPick(), all scoped to Toronto timezone
+using Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto" }).
+
+  Pass 1: Today's highest-confidence real-value sharp pick
+          (isRealValue=true, game_date === today, sorted by calibratedConfidence DESC)
+  Pass 2: Today's best safe-zone balanced pick
+          (balancedPick != null, game_date === today)
+  Pass 3: Next upcoming sharp pick (future date)
+          → dateLabel set to e.g. "Next pick — Tue Jun 23"
+  Pass 4: Next upcoming safe-zone pick (future date)
+          → dateLabel set similarly
+
+When dateLabel is set, the section badge changes to "Next pick — Tue Jun 23",
+the heading reads "Upcoming free pick", and an explanatory note appears:
+"No qualifying pick available for today yet. Showing the next upcoming pick."
+
+─────────────────────────────────────────────────────────────────────────────
+PART 2 — ADMIN / SUBSCRIBER PREVIEW
+─────────────────────────────────────────────────────────────────────────────
+Two flags in web/src/app/landing/page.tsx (lines 6–11):
+
+  const LANDING_PAGE_ENABLED = false;   // flip to go live
+  const ADMIN_PREVIEW = false;          // flip OR use ?admin=1
+
+Activation: ADMIN_PREVIEW = true  OR  navigate to /landing?admin=1
+Condition:  only active while LANDING_PAGE_ENABLED = false (internal preview mode)
+
+What it does:
+  - Server fetches full subscriber data: getMLBPlayerProps() + getMLBDiagnostics()
+    in addition to the already-fetched sharpPicks + safeZone
+  - Builds deduplicated GameInfo[] list for live score polling
+  - Passes AdminPreviewData to LandingPage → LandingAdminPreview client component
+  - LandingAdminPreview calls useLiveScores() for live game scores
+  - Renders full MLBSubscriberView (same component real subscribers see)
+    with all data: sharpPicks, safeZone, playerProps, liveState, gradedPicks
+  - Subscriber view includes: expandable game cards, team logos, color-coded
+    tiers (gold BotD, green Sharp, blue Safe, purple Props), stat chips
+    (edge/winProb/odds), live score modules, subscriber track record panel
+
+Admin ribbon (always visible in admin mode):
+  "⚠️ ADMIN PREVIEW — not a real session
+   No Supabase session exists. No subscription has been verified.
+   Replace with Supabase Auth + subscription middleware before launch."
+
+InternalBanner also notes "Admin preview active (?admin=1)" when on.
+The admin preview section renders BELOW the full landing page so both the
+marketing design and the subscriber UX are visible in one scroll.
+
+IMPORTANT: This is a visual dev tool only. Zero auth, zero session, zero
+database writes. The comment in LandingAdminPreview.tsx explicitly instructs
+replacement with Supabase Auth + subscription check before launch.
+
+─────────────────────────────────────────────────────────────────────────────
+PART 3 — LIVE PLAYER PROP BOX SCORES
+─────────────────────────────────────────────────────────────────────────────
+Status: ALREADY FULLY IMPLEMENTED in a prior session. No changes needed.
+
+Confirmed present and wired:
+
+  web/src/hooks/useLivePlayerStats.ts
+    - Polls https://statsapi.mlb.com/api/v1/game/{gamePk}/boxscore every 45s
+    - Only fetches for games where isLive=true AND gamePk is known
+    - Stops polling when no live games remain (no leaks)
+    - Returns LivePlayerStatsMap keyed by "${gameId}:${playerMlbId}"
+    - Pulls: batters → hits/runs/rbi; pitchers → strikeOuts/outs/hitsAllowed/walks/earnedRuns
+    - Never writes to any table
+
+  web/src/components/MLBPlayerPropsCard.tsx
+    - computeLivePropStatus(market, side, line, stat) → "currently_winning" |
+      "currently_losing" | "too_close" | "on_track" | null
+    - formatLiveStatDisplay() formats stat for display (e.g. "H+R+RBI: 1 so far (1H / 0R / 0RBI)")
+    - PropRow renders live stat row + colored status chip + "NOT FINAL" label
+      when game is live and player stat is available
+    - All reads MLB API directly; zero grading writes; VOID guards untouched
+
+  web/src/components/PicksView.tsx
+    - Calls useLivePlayerStats(liveState) at component level (always, per hook rules)
+    - Passes livePlayerStats={livePlayerStats} to MLBPlayerPropsCard
+
+─────────────────────────────────────────────────────────────────────────────
+PART 4 — iPhone PWA INSTALL
+─────────────────────────────────────────────────────────────────────────────
+Pre-existing setup was already correct for installability:
+  ✓ manifest.webmanifest  (display: "standalone", start_url: "/")
+  ✓ Service worker        (public/sw.js — network-first, offline fallback)
+  ✓ SW registration       (ServiceWorkerRegister.tsx, runs on mount)
+  ✓ Apple meta in layout  (appleWebApp.capable, statusBarStyle, title)
+
+What changed in this build:
+  - theme_color: "#07111f" → "#ff5c6c"   (SharpEdge red, in manifest + layout viewport)
+  - Manifest name: "SharpEdge Soccer Picks" → "SharpEdge"
+  - All icons updated from dark-blue/cyan "S" to red "SE ⚾":
+      icon.tsx (32x32 favicon)            → red bg, white "SE"
+      apple-icon.tsx (180x180)            → red bg, white "SE ⚾"
+      icons/[size]/route.tsx (192 + 512)  → red bg, white "SE ⚾", rounded corners
+
+SAFARI INSTALL STEPS (iPhone):
+  1. Open https://sharpedge.app (or your dev URL) in Safari — not Chrome/Firefox
+  2. Tap the Share icon (box with upward arrow) in the bottom toolbar
+  3. Scroll down and tap "Add to Home Screen"
+  4. Name confirms as "SharpEdge" — tap "Add" (top right)
+  5. The app icon (red SE ⚾) appears on your home screen
+  6. Tap it — opens full-screen standalone (no Safari chrome, red status bar)
+
+Note: PWA install prompt is Safari-only on iPhone. Chrome/Firefox on iOS
+use the same WebKit engine but do not show the "Add to Home Screen" sheet
+automatically — users must use Safari's share menu.
+
+─────────────────────────────────────────────────────────────────────────────
+BUILD VERIFICATION
+─────────────────────────────────────────────────────────────────────────────
+npx tsc --noEmit  → exit 0 (clean)
+npm run build     → exit 0 (all 7 routes compiled, no warnings)

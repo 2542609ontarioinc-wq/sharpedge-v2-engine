@@ -1,0 +1,153 @@
+SUBSCRIBER GRADING — SESSION SUMMARY
+Generated: 2026-06-20
+======================================================================
+
+WHAT CHANGED
+----------------------------------------------------------------------
+All code was already implemented in a prior session. No code changes
+were made in this session. The only outstanding action is running one
+SQL migration in Supabase (see below).
+
+FILES THAT IMPLEMENT SUBSCRIBER GRADING
+----------------------------------------------------------------------
+
+src/grading/subscriber_thresholds.py
+  Single source of truth for qualification thresholds. Both the
+  Python grading chain and the web filter read from here so they
+  can never drift apart.
+    EDGE_MIN  = 3.0    (min model edge % for sharp/prop picks)
+    PROB_MIN  = 65.0   (min win-probability % for all pick types)
+    BOTD_EDGE = 5.0    (Bet of the Day: edge must be >= this)
+    BOTD_PROB = 70.0   (Bet of the Day: win prob must be >= this)
+    EDGE_MAX  = 15.0   (upper sanity cap, mirrors web isRealValue check)
+
+src/grading/build_mlb_pick_detail.py
+  After grading, enriches every graded game pick row with two new
+  boolean columns: subscriber_qualified and bet_of_day.
+  Sharp picks qualify when: edge_flag == "REAL" AND edge >= EDGE_MIN
+  AND prob >= PROB_MIN. Safe-zone picks qualify on prob >= PROB_MIN
+  alone (no model edge). Bet of the Day requires edge >= BOTD_EDGE
+  AND prob >= BOTD_PROB.
+
+src/grading/build_mlb_prop_detail.py
+  Same subscriber flag logic for player prop picks. Pick side
+  (Over/Under) is used to flip calibrated_over_prob to the correct
+  win-probability for the chosen side before applying PROB_MIN.
+
+src/analytics/build_mlb_subscriber_analytics.py
+  Reads subscriber_qualified = true rows from both detail tables,
+  aggregates across two segments ("all" and "bet_of_day"), and
+  upserts one row per segment into mlb_subscriber_results.
+  Reports: N, W-L, win%, ROI, avg edge, avg win-prob, avg CLV,
+  CLV beat rate. CLV is framed as the primary signal; win%/ROI
+  are secondary (favourites bias caveat).
+
+web/src/components/MLBSubscriberView.tsx
+  SubscriberTrackRecord component (bottom of Subscriber tab).
+  Shows both segments side-by-side. Includes:
+    - INTERNAL badge
+    - Honesty banner (paper-only, unproven model)
+    - INSUFFICIENT DATA warning when n < 30
+    - CLV called out as primary signal
+  Fetches data via getMLBSubscriberResults() on mount.
+
+web/src/lib/data.ts → getMLBSubscriberResults()
+  Reads mlb_subscriber_results ("all" and "bet_of_day" rows) and
+  maps to MLBSubscriberResults / MLBSubscriberSegment types.
+
+scripts/run_mlb_engine.py steps 11–12
+  Subscriber grading is wired into the daily automation chain:
+    Step 11a: python -m src.grading.build_mlb_pick_detail
+    Step 11b: python -m src.grading.build_mlb_prop_detail
+    Step 12:  python -m src.analytics.build_mlb_subscriber_analytics
+  These run after grade_mlb_results (step 8) and build_mlb_clv
+  (step 10), so CLV is already populated before aggregation.
+
+
+SQL TO RUN IN SUPABASE
+----------------------------------------------------------------------
+File:  sql/089_mlb_subscriber_results.sql
+
+Run the contents of that file in the Supabase SQL Editor.
+All statements are idempotent (ADD COLUMN IF NOT EXISTS /
+CREATE TABLE IF NOT EXISTS) so it is safe to re-run.
+
+What it does:
+  1. ALTER TABLE mlb_pick_detail
+       ADD COLUMN IF NOT EXISTS subscriber_qualified boolean DEFAULT false,
+       ADD COLUMN IF NOT EXISTS bet_of_day           boolean DEFAULT false;
+     + partial index on subscriber_qualified = true
+
+  2. ALTER TABLE mlb_prop_detail
+       ADD COLUMN IF NOT EXISTS subscriber_qualified boolean DEFAULT false,
+       ADD COLUMN IF NOT EXISTS bet_of_day           boolean DEFAULT false;
+     + partial index on subscriber_qualified = true
+
+  3. CREATE TABLE IF NOT EXISTS mlb_subscriber_results (
+       segment          text PRIMARY KEY,   -- 'all' | 'bet_of_day'
+       pick_count       integer,
+       win_count        integer,
+       loss_count       integer,
+       win_rate         double precision,
+       units_profit     double precision,
+       roi_percent      double precision,
+       avg_edge         double precision,
+       avg_win_prob     double precision,
+       avg_clv          double precision,
+       clv_beat_rate    double precision,
+       computed_at      timestamptz
+     );
+
+
+AFTER RUNNING THE SQL — POPULATE
+----------------------------------------------------------------------
+Run these three steps in order:
+
+  python -m src.grading.build_mlb_pick_detail
+  python -m src.grading.build_mlb_prop_detail
+  python -m src.analytics.build_mlb_subscriber_analytics
+
+Or run the full daily engine which includes all steps:
+
+  python scripts/run_mlb_engine.py
+
+
+SUBSCRIBER TRACK RECORD — CURRENT STATE (pre-SQL)
+----------------------------------------------------------------------
+The SQL has not been applied yet so mlb_subscriber_results does not
+exist and the web component shows nothing.
+
+Current data in Supabase (as of 2026-06-20):
+
+  mlb_pick_grades: 51 rows total
+    Markets: safe_balanced=22, totals=21, safe_banker=7, moneyline=1
+    edge_flag: all 51 rows are "no-odds"
+    Rows with model_edge populated: 0
+    Rows with calibrated_confidence: 22
+
+  Sharp picks qualifying for subscriber tab: 0
+    (Requires edge_flag == "REAL" AND model_edge >= 3% AND
+     calibrated_conf >= 65%. All current grades are no-odds.)
+
+  Safe-zone picks likely to qualify once SQL + rebuild runs:
+    safe_balanced with prob >= 65%: ~20 of 22 graded rows
+    safe_banker   with prob >= 65%: up to 7 graded rows
+    (Exact count depends on the prob stored in mlb_safe_zone at
+     the time each game was graded; the detail builder does a live
+     lookup.)
+
+  Expected first populated track record (approximate):
+    Segment "all":
+      N = ~20–27 (INSUFFICIENT DATA — n < 30 warning will show)
+      Grades split: 33 total wins / 18 losses across ALL grades;
+        subscriber subset will be a fraction of those
+      ROI: no-odds wins count 0 units, so ROI will be 0 or null
+        until real-odds picks accumulate
+      avg_clv: (no data) — CLV capture not yet consistently populated
+
+    Segment "bet_of_day":
+      N = 0 (safe-zone picks cannot be Bet of the Day; no sharp
+        picks with real odds have been graded yet)
+
+The INSUFFICIENT DATA banner (n < 30) and "(no data)" CLV label
+will display in the UI until volume builds from real-odds picks.

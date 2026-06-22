@@ -1,0 +1,161 @@
+MLB VISUAL UPGRADE — LIVE SCOREBOARD, LOGOS, HEADSHOTS, CARD POLISH
+Applied: 2026-06-20
+Commit: acd8518
+======================================================================
+
+WHAT CHANGED
+----------------------------------------------------------------------
+Display-only visual upgrade. No data pipeline, model, grading, backend
+logic, soccer components, or honesty banners were touched.
+
+
+NEW FILES
+----------------------------------------------------------------------
+
+web/src/lib/mlb-teams.ts
+  Maps lowercase team name variants to MLB Stats API integer teamId
+  for all 30 franchises. Handles full names, city+nickname, and bare
+  nickname (e.g. "Yankees", "Red Sox"). Includes Athletics relocation
+  aliases (Oakland / Sacramento → 133).
+
+  Exports:
+    mlbTeamId(name)  → number | null
+    mlbLogoUrl(name) → "https://www.mlbstatic.com/team-logos/{id}.svg" | null
+
+web/src/hooks/useLiveScores.ts
+  Client-side polling hook. Fetches live linescore data DIRECTLY from
+  the MLB Stats API (no backend, no Supabase read):
+    GET https://statsapi.mlb.com/api/v1/schedule
+        ?sportId=1&date=YYYY-MM-DD&hydrate=linescore
+
+  Behaviour:
+    - Fetches on mount, then every 45 seconds
+    - Polls ONLY while at least one game on screen is live
+      (detailedState contains 'live' or 'in progress')
+    - Clears interval when no live games → no battery drain, no leaks
+    - Cleans up interval on component unmount
+    - Silently swallows fetch errors (console.error only — never breaks
+      render)
+    - Matches MLB Stats API games to our internal gameIds by
+      (date, home team name, away team name). Normalises to lowercase
+      with nickname-fallback for the A's and other edge cases.
+    - Returns Map<gameId, LiveScore> where LiveScore has:
+        homeScore, awayScore, inning, inningHalf, outs,
+        isLive (boolean), gameStatus (raw detailedState string)
+    - NEVER writes to any database table
+
+web/src/components/TeamLogo.tsx
+  <TeamLogo team={name} size={28} />
+  Renders the SVG logo from mlbstatic.com. onError → hides the image
+  (sets to null via state). Never blocks render if CDN is down.
+
+web/src/components/PlayerAvatar.tsx
+  <PlayerAvatar playerMlbId={id} playerName={name} size={32} />
+  Primary: fetches https://midfield.mlbstatic.com/v1/people/{id}/spots/120
+  Fallback (onError or no id): shows an initials circle avatar
+  (first + last initial, dark bg, muted text, rounded-full).
+
+web/src/components/LiveScoreModule.tsx
+  Inline live-game module rendered inside expanded MLB cards.
+  Returns null when live.isLive === false, so safe to always render.
+  When live:
+    - Pulsing amber dot (animate-pulse) + "LIVE" label
+    - Score: {awayScore} — {awayTeam} vs {homeTeam} — {homeScore}
+    - Inning: ▲{n} (Top) or ▼{n} (Bottom)
+    - Outs: {n} out(s) in muted text
+    - Non-binding pick status chip from computeLivePickStatus():
+        Green chip  "Currently Winning"
+        Red chip    "Currently Losing"
+        Amber chip  "Too Close"
+    - "LIVE — NOT FINAL" disclaimer always shown below
+
+
+MODIFIED FILES
+----------------------------------------------------------------------
+
+web/src/lib/types.ts
+  MLBPlayerProp: added playerMlbId: number | null (after playerType)
+  All other types unchanged.
+
+web/src/lib/data.ts
+  getMLBPlayerProps(): added player_mlb_id to the Supabase select
+  string and mapped it to playerMlbId in the returned object.
+
+web/src/components/GameGroupCard.tsx  (MLB sections only)
+  MLBGameGroupCard:
+    - Accepts new optional prop: liveState?: Map<string, LiveScore>
+    - TeamLogo before each team name in the collapsed header
+    - Small ⚾ MLB badge in the header right-side group
+    - Pulsing amber dot + "LIVE" text next to first-pitch time when
+      the game is live (looked up from liveState by gameId)
+    - LiveScoreModule rendered in the expanded panel (returns null
+      when not live, so no visual impact on non-live games)
+  SoccerGameGroupCard / SoccerPickRow: untouched
+
+web/src/components/MLBSafeZoneCard.tsx
+  - Accepts new optional prop: liveState?: Map<string, LiveScore>
+  - TeamLogo before each team name
+  - ⚾ MLB badge in top-right corner
+  - Pulsing amber dot in game time line when live
+  - LiveScoreModule rendered after the balanced pick section
+
+web/src/components/MLBPlayerPropsCard.tsx
+  - Accepts new optional prop: liveState?: Map<string, LiveScore>
+  - TeamLogo before each team name in card header
+  - ⚾ MLB badge
+  - Live score at top of card when game is live
+  - PlayerAvatar next to each pitcher section heading (uses the
+    playerMlbId from the first prop row for that pitcher)
+  - PlayerAvatar next to each batter in the batters section
+
+web/src/components/PicksView.tsx
+  - Imports useLiveScores and LiveScore type
+  - Builds allMlbGames: GameInfo[] — deduped union of gameIds from
+    mlbSharpPicks + mlbSafeZone + mlbPlayerProps
+  - Calls useLiveScores(allMlbGames) unconditionally at component level
+    (React hook rules: not inside a conditional)
+  - Passes liveState to: MLBGameGroupCard, MLBSafeZoneCard,
+    MLBPlayerPropsCard, and MLBSubscriberView as props
+
+web/src/components/MLBSubscriberView.tsx
+  - Main export accepts new optional prop: liveState?: Map<string, LiveScore>
+  - Internal GameCard component: TeamLogo on team names, pulsing live
+    dot in game time line, LiveScoreModule in expanded pick area
+  - liveState threaded from MLBSubscriberView → GameCard
+  - All honesty banners, INTERNAL badges, "paper-only — do not bet"
+    disclaimers, CLV warnings, and qualifying criteria legend are
+    UNCHANGED
+
+
+WHAT WAS NOT CHANGED
+----------------------------------------------------------------------
+- SoccerGameGroupCard, SoccerPickRow, SafeZoneCard, SharpPickCard     — untouched
+- TrackRecordView, MLBTrackRecordView, MLBModelLabView                — untouched
+- MLBDiagnosticsView, MLBSubscriberView honesty/disclaimer text       — untouched
+- Any Python backend, grading chain, model, data pipeline             — untouched
+- Supabase mlb_live_state table: still written by sync_mlb_live_state.py
+  hourly. The frontend hook reads the MLB Stats API DIRECTLY — it does
+  not read mlb_live_state and does not write to any table.
+- computeLivePickStatus() in data.ts: used by LiveScoreModule, not changed
+
+
+LIVE SCORE POLLING LOGIC (non-binding display)
+----------------------------------------------------------------------
+The useLiveScores hook polls statsapi.mlb.com directly from the browser.
+This means live scores on screen can be fresher than mlb_live_state
+(which is updated hourly by the server-side job). That is intentional
+and acceptable — live display is independent of grading.
+
+Poll cadence:
+  - On mount: immediate fetch
+  - Every 45 seconds IF at least one game isLive
+  - Interval cleared when no live games
+  - Interval cleared on component unmount
+
+No credentials, no API key — the MLB Stats API is public and keyless.
+
+
+BUILD STATUS
+----------------------------------------------------------------------
+npx tsc --noEmit → 0 errors ✓
+Commit: acd8518 (pushed to main)

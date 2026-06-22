@@ -1,0 +1,90 @@
+IMPORT FIX — MISSING ANALYTICS MODULES NOT COMMITTED TO GIT
+Applied: 2026-06-20
+Commit: 4e6c99b
+======================================================================
+
+ERROR REPORTED
+----------------------------------------------------------------------
+ModuleNotFoundError: No module named 'src.analytics.build_mlb_subscriber_analytics'
+Raised at: src/grading/grade_mlb_picks_incremental.py line 22
+Context: hourly GitHub Actions job (refresh-batter-props)
+
+
+ROOT CAUSE
+----------------------------------------------------------------------
+Two Python source files were created during a prior session (subscriber
+grading implementation) but were NEVER staged or committed to git:
+
+  src/analytics/build_mlb_subscriber_analytics.py  (new, untracked)
+  src/grading/subscriber_thresholds.py              (new, untracked)
+
+They existed in the local devcontainer filesystem, so all local tests
+and dry runs passed. GitHub Actions checks out the repo fresh on each
+run — the files were absent from the checkout, causing the import to
+fail at runtime.
+
+The import path itself was correct. No code change was needed.
+
+
+DIAGNOSIS STEPS
+----------------------------------------------------------------------
+1. Confirmed the file exists locally at the path the import expects:
+   find . -name "*subscriber*" -name "*.py"
+   → /workspaces/sharpedge-v2-engine/src/analytics/build_mlb_subscriber_analytics.py
+   → /workspaces/sharpedge-v2-engine/src/grading/subscriber_thresholds.py
+
+2. Confirmed all four imports in grade_mlb_picks_incremental.py resolve
+   locally:
+   python -c "import src.grading.grade_mlb_picks_incremental; print('all imports OK')"
+   → all imports OK
+
+3. Checked git tracking status:
+   git ls-files src/analytics/build_mlb_subscriber_analytics.py
+                src/grading/subscriber_thresholds.py
+                src/grading/build_mlb_pick_detail.py
+                src/grading/build_mlb_prop_detail.py
+   → build_mlb_pick_detail.py    tracked ✓
+   → build_mlb_prop_detail.py    tracked ✓
+   → build_mlb_subscriber_analytics.py  NOT TRACKED ✗
+   → subscriber_thresholds.py           NOT TRACKED ✗
+
+4. Confirmed no other untracked source files:
+   git status --short src/ | grep "^?"
+   → only the two files above
+
+
+FIX APPLIED
+----------------------------------------------------------------------
+git add src/analytics/build_mlb_subscriber_analytics.py \
+        src/grading/subscriber_thresholds.py
+git commit -m "Fix: commit missing analytics and thresholds modules"
+git push origin main
+
+
+VERIFICATION
+----------------------------------------------------------------------
+python -c "import src.analytics.build_mlb_subscriber_analytics"
+→ (no output — import OK) ✓
+
+python -c "import src.grading.grade_mlb_picks_incremental; print('all imports OK')"
+→ all imports OK ✓
+
+python -m src.grading.grade_mlb_picks_incremental
+→ [incremental-grade] No new final games — nothing to do. ✓
+
+All four imports in the incremental grader now resolve both locally
+and in CI:
+  src.grading.grade_mlb_picks          ✓ (was already tracked)
+  src.grading.grade_mlb_prop_picks     ✓ (was already tracked)
+  src.grading.build_mlb_pick_detail    ✓ (was already tracked)
+  src.grading.build_mlb_prop_detail    ✓ (was already tracked)
+  src.models.build_mlb_clv             ✓ (was already tracked)
+  src.analytics.build_mlb_subscriber_analytics  ✓ (now committed)
+
+
+LESSON
+----------------------------------------------------------------------
+Files created in a devcontainer session are local only until explicitly
+staged and committed. git status / git ls-files should be run after
+any session that creates new Python modules, before relying on CI to
+import them.

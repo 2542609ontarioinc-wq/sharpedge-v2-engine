@@ -1,0 +1,153 @@
+ODDS PRESERVATION FIX — SUMMARY AND VERIFICATION TRACE
+Applied: 2026-06-20
+Commit: 5ad8d9e
+======================================================================
+
+ROOT CAUSE (from odds_clv_diagnosis.txt)
+----------------------------------------------------------------------
+build_mlb_final_picks.py re-processed ALL games in mlb_run_predictions
+every daily run, including settled games. sync_mlb_odds.py purges
+mlb_odds at the start of each run and only refetches upcoming games,
+so settled games had no odds. The pick builder would find no odds,
+set edge_flag='no-odds' and model_edge=None, and upsert that over the
+original REAL prediction — destroying edge_flag, model_edge, odds_decimal,
+market_implied_probability (opening novig), and mlb_safe_zone.balanced_novig_pct.
+
+grade_mlb_picks.py reads edge_flag and model_edge directly from
+mlb_final_predictions and copies them into mlb_pick_grades, so 100%
+of graded picks inherited no-odds/null from the corrupted predictions.
+build_mlb_clv.py then skipped all picks at the no-odds gate, producing
+zero CLV rows.
+
+
+FILE CHANGED
+----------------------------------------------------------------------
+src/models/build_mlb_final_picks.py  (+86 lines, -7 lines)
+
+
+WHAT WAS ADDED
+----------------------------------------------------------------------
+
+1. _SETTLED_STATUSES constant (module level)
+   Set of lowercase status strings that mean a game is done:
+     ft, aot, f, final, game finished, finished,
+     postponed, cancelled, canceled, suspended, post
+
+2. _is_settled(game) helper
+   Returns True if game['status'] or game['period'] (lowercased) is
+   in _SETTLED_STATUSES. Checks both fields to match the pattern used
+   by grade_mlb_picks.py.
+
+3. Layer 1 — skip settled games (primary fix), added to main()
+   After fetching mlb_run_predictions, queries the games table for the
+   status/period of every game_id in the prediction list and builds a
+   settled_ids set. Any game in that set is skipped with 'continue'
+   before candidates are built, before odds are looked up, and before
+   any upsert fires. The stored row is completely untouched.
+
+4. Layer 2 — non-destructive upsert (backstop), added to main()
+   Before the main() loop, pre-loads existing edge_flag from
+   mlb_final_predictions and balanced_edge_flag from mlb_safe_zone
+   into dicts keyed by game_id. In Pass 3, before each upsert:
+     - If existing edge_flag in ('REAL','suspect') AND new edge_flag
+       == 'no-odds': block the mlb_final_predictions write, log it,
+       increment skipped_downgrade counter.
+     - Same guard for mlb_safe_zone using balanced_edge_flag.
+   This catches the window between a game ending and the games table
+   status being updated (i.e. the game slips through Layer 1 but
+   already has real odds stored from an earlier run that day).
+
+   Layer 2 logic covers all five cases correctly:
+     REAL existing    → no-odds new  : BLOCKED   (protects real edge)
+     REAL existing    → REAL new     : ALLOWED   (odds refresh ok)
+     no-odds existing → no-odds new  : ALLOWED   (no data to protect)
+     suspect existing → no-odds new  : BLOCKED   (protects opening novig)
+     no existing row  → no-odds new  : ALLOWED   (first write, nothing to lose)
+
+5. Updated summary line
+   Now prints: N written | N safe zones | N settled skipped (Layer 1)
+               | N downgrade blocked (Layer 2) | N no candidates
+
+
+WHAT WAS NOT CHANGED
+----------------------------------------------------------------------
+- sync_mlb_odds.py: purge-and-refresh pattern unchanged. It's correct
+  that mlb_odds only holds today's upcoming games — that's what the
+  Odds API returns. The fix is in the consumer, not the purger.
+- grade_mlb_picks.py: unchanged. It reads from mlb_final_predictions,
+  which will now have preserved REAL values for settled games.
+- build_mlb_clv.py: unchanged. The no-odds gate at line ~265 is correct;
+  it will now process REAL picks once the predictions stop being corrupted.
+- mlb_safe_zone: the balanced_novig_pct / banker_novig_pct fields that
+  build_mlb_clv.py reads for opening novig are now also protected by
+  Layer 2 (balanced_edge_flag guard).
+- No soccer files touched.
+- No model math, grading formulas, or pick selection logic changed.
+
+
+VERIFICATION TRACE
+----------------------------------------------------------------------
+
+Run executed: python -m src.models.build_mlb_final_picks  (2026-06-20 ~20:55 UTC)
+
+Output summary:
+  [Layer 1] Skipping 23 settled games — picks already final
+  ... (53 upcoming-game picks written) ...
+  ✅ MLB final picks: 53 written | 53 safe zones |
+     23 settled skipped (Layer 1) | 0 downgrade blocked (Layer 2) |
+     0 no candidates
+
+Layer 1 fired: 23 settled game_ids were identified and skipped.
+Layer 2 did not fire: Layer 1 caught all settled games before any
+  downgrade attempt reached the upsert guard.
+
+Timestamp check (confirms no settled rows were touched):
+  Settled game rows (graded picks from 2026-06-18 / 2026-06-19):
+    updated_at = 2026-06-20T13:34:xx  (previous, pre-fix run)
+  Upcoming game rows written by new run:
+    updated_at = 2026-06-20T20:55:xx
+  Settled rows were NOT touched by new run: TRUE
+
+Layer 2 smoke-test (all 5 cases PASS):
+  REAL existing    → no-odds new  : BLOCKED  ✓
+  REAL existing    → REAL new     : ALLOWED  ✓
+  no-odds existing → no-odds new  : ALLOWED  ✓
+  suspect existing → no-odds new  : BLOCKED  ✓
+  no existing row  → no-odds new  : ALLOWED  ✓
+
+
+HISTORICAL GAP (accepted)
+----------------------------------------------------------------------
+The 51 picks graded before 2026-06-20T20:55 already have corrupted
+no-odds/null values. Their original odds data is unrecoverable from
+Supabase — the Odds API does not provide historical prices, and
+mlb_odds is purged daily. No history is fabricated.
+
+These picks will remain in mlb_pick_grades with edge_flag='no-odds'
+and will be excluded from CLV and subscriber-qualified counts. That
+is the correct and honest behaviour.
+
+
+WHAT HAPPENS FROM HERE
+----------------------------------------------------------------------
+Going forward:
+  1. Today's upcoming picks (written at 20:55) carry real edge_flag,
+     model_edge, odds_decimal, and market_implied_probability where
+     odds were available.
+  2. When those games finish, grade_mlb_picks.py will read the
+     preserved REAL values and write them into mlb_pick_grades.
+  3. build_mlb_final_picks.py will skip those settled games on all
+     subsequent runs (Layer 1).
+  4. build_mlb_clv.py will process graded picks with edge_flag='REAL',
+     compute closing_novig - opening_novig, and write CLV rows —
+     for any game that also has closing snapshots in mlb_odds_snapshots
+     captured before first pitch.
+  5. build_mlb_pick_detail.py will flag subscriber_qualified=true and
+     bet_of_day=true on picks where edge >= 3% and prob >= 65%.
+  6. build_mlb_subscriber_analytics.py will aggregate those into
+     mlb_subscriber_results (once SQL 089 is applied in Supabase).
+
+CLV population is gated on snap_mlb_odds_closing.py running hourly
+before each game's first pitch. That has been running since
+2026-06-19T20:32 UTC. All games from 2026-06-20 onwards have closing
+snapshot coverage.

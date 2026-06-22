@@ -1,0 +1,123 @@
+LIVE PLAYER PROP BOX-SCORE STATS
+Applied: 2026-06-20
+Commit: cdf8376
+======================================================================
+
+WHAT CHANGED
+----------------------------------------------------------------------
+Per-player live box-score stats added to the Player Props tab.
+Display-only — never writes to any table, never touches grades.
+
+
+NEW FILE
+----------------------------------------------------------------------
+
+web/src/hooks/useLivePlayerStats.ts
+  Client-side polling hook. When at least one MLB game in liveState
+  is in progress, fetches:
+    GET https://statsapi.mlb.com/api/v1/game/{gamePk}/boxscore
+
+  Behaviour:
+    - Runs fetchBoxscore() immediately when new live gamePks appear
+    - Polls every 45 seconds while at least one game is live
+    - Stops interval when no live games remain
+    - Cleans up interval on unmount
+    - Silently swallows fetch/parse errors (console.error only)
+    - Never writes to any database table
+
+  Map key: "${gameId}:${playerMlbId}"  (e.g. "2026-06-19-nym-phi:592789")
+
+  Per-player stat shape (LivePlayerStat):
+    Batting:  hits, runs, rbi
+    Pitching: strikeOuts, outs, hitsAllowed, walks, earnedRuns
+
+  inningsPitched parsing:
+    "4.2" = 4 full innings + 2 outs = 14 total outs
+    (ip.split(".") → whole*3 + partial)
+
+  liveGamePksKey dependency:
+    Sorted live gamePks joined as a string used as useEffect dep.
+    Effect re-fires when the set of live games changes (new games
+    go live mid-session), not on every render.
+
+
+MODIFIED FILES
+----------------------------------------------------------------------
+
+web/src/hooks/useLiveScores.ts
+  Added gamePk: number | null to LiveScore type.
+  Captured from schedule API response:
+    gamePk: typeof g.gamePk === "number" ? g.gamePk : null
+  Required by useLivePlayerStats to build the boxscore URL.
+
+web/src/components/MLBPlayerPropsCard.tsx
+  PropRow now accepts livePlayerStats + isLive and shows an inline
+  live strip when the game is in progress and the player's stat is
+  available.
+
+  Live stat lookup:
+    key = "${gameId}:${prop.playerMlbId}"
+    looked up in livePlayerStats map passed from PicksView
+
+  computeLivePropStatus(market, side, line, stat):
+    Over bets:
+      current > line  → "currently_winning"  (green)
+      current = line  → "too_close"           (amber)
+      current < line  → "currently_losing"    (red)
+    Under bets:
+      current > line  → "currently_losing"    (red)
+      current = line  → "too_close"           (amber)
+      current < line  → "on_track"            (muted)
+      NOTE: Under bets never show "winning" mid-game — provisional.
+
+  formatLiveStatDisplay(market, stat):
+    h_r_rbi       → "3 so far (1H / 1R / 1RBI)"
+    strikeouts    → "4 K so far"
+    outs_recorded → "12 outs recorded"
+    earned_runs   → "2 ER so far"
+    hits_allowed  → "5 H allowed"
+    walks         → "1 BB so far"
+
+  Status chips rendered inline per prop row:
+    Winning        bg-elite/15  text-elite  border-elite/30
+    Losing         bg-reject/15 text-reject border-reject/30
+    On the line    bg-watch/15  text-watch  border-watch/30
+    On track (u.)  bg-muted/10  text-muted  border-border-strong
+
+  Each live strip always shows:
+    • Pulsing amber dot + "Live" label
+    • Stat display string
+    • Status chip (if computable)
+    • "not final" label (right-aligned, always present)
+
+web/src/components/PicksView.tsx
+  Added import: useLivePlayerStats from @/hooks/useLivePlayerStats
+  Added hook call: const livePlayerStats = useLivePlayerStats(liveState)
+  Added prop:     livePlayerStats={livePlayerStats} on MLBPlayerPropsCard
+
+
+WHAT WAS NOT CHANGED
+----------------------------------------------------------------------
+- Grading logic, grade tables, mlb_pick_grades               — untouched
+- computeLivePickStatus() in data.ts                         — untouched
+- LiveScoreModule (game-level live score)                    — untouched
+- Soccer components                                          — untouched
+- All honesty banners, INTERNAL badges, disclaimers          — untouched
+- Any Python backend or data pipeline                        — untouched
+
+
+GUARD RAILS
+----------------------------------------------------------------------
+1. Props with no playerMlbId (null) never attempt a lookup — no fetch.
+2. Games not in liveState (not live) never show the stat strip.
+3. Markets with no stat mapping return null from getStatValue →
+   computeLivePropStatus returns null → no chip rendered.
+4. "not final" label is always shown when live strip is visible.
+5. The hook clears its interval immediately when liveState has no
+   live games — zero idle polling.
+
+
+BUILD STATUS
+----------------------------------------------------------------------
+npx tsc --noEmit → 0 errors ✓
+Commit: cdf8376 (pushed to main)

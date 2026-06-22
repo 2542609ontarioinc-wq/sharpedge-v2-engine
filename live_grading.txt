@@ -1,0 +1,225 @@
+LIVE GAME TRACKING + GRADE-ON-FINAL — SESSION SUMMARY
+Applied: 2026-06-20
+Commit: cbd1397
+======================================================================
+
+SQL TO RUN IN SUPABASE
+----------------------------------------------------------------------
+File:  sql/090_mlb_live_state.sql
+
+Paste into the Supabase SQL Editor and run:
+
+  CREATE TABLE IF NOT EXISTS mlb_live_state (
+      game_id       text PRIMARY KEY,
+      home_score    integer,
+      away_score    integer,
+      inning        integer,
+      inning_half   text,
+      outs          integer,
+      game_status   text,
+      home_pitcher  text,
+      away_pitcher  text,
+      captured_at   timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_mlb_live_state_status
+      ON mlb_live_state(game_status);
+
+Both statements are idempotent (IF NOT EXISTS) — safe to re-run.
+
+
+WHAT CHANGED
+----------------------------------------------------------------------
+
+PART A — Live score / box score display
+File: src/ingestion/sync_mlb_live_state.py  (new)
+
+  Queries the MLB Stats API schedule endpoint with linescore hydration
+  (a single bulk call per date, no API key, no credit cost):
+    GET https://statsapi.mlb.com/api/v1/schedule
+        ?sportId=1&date=YYYY-MM-DD&hydrate=linescore,probablePitcher
+
+  For each date that has pick game_ids in mlb_final_predictions or
+  mlb_safe_zone, fetches all games and matches them to our internal
+  game_id by (game_date, home_team_name, away_team_name). Matching
+  uses case-insensitive full-name comparison with a nickname-fallback
+  for edge cases (Athletics relocation, etc.).
+
+  Stores per-game linescore in mlb_live_state (upsert on game_id):
+    game_id       — internal UUID from the games table
+    home_score    — current runs scored
+    away_score    — current runs scored
+    inning        — current inning number
+    inning_half   — 'Top' | 'Bottom'
+    outs          — outs in current inning
+    game_status   — detailedState from MLB Stats API (e.g. 'Live',
+                    'Final', 'Preview', 'Postponed', 'Warmup')
+    home_pitcher  — probable/scheduled starter name
+    away_pitcher  — probable/scheduled starter name
+    captured_at   — UTC timestamp of last write
+
+  DISPLAY-ONLY: never reads from or writes to mlb_pick_grades,
+  mlb_prop_grades, mlb_final_predictions, mlb_safe_zone, or any
+  other table used by the grading chain.
+
+
+PART B — Live pick status preview (transient, display-only)
+Files: web/src/lib/data.ts  (new function + row type)
+       web/src/lib/types.ts  (two new types)
+
+  New TypeScript types:
+    MLBLiveState      — shape of a row from mlb_live_state
+    MLBLivePickStatus — "currently_winning" | "currently_losing"
+                        | "too_close" | null
+
+  New data.ts function — getMLBLiveState():
+    Fetches all rows from mlb_live_state and returns a
+    Map<gameId, MLBLiveState> for O(1) lookup in components.
+
+  New data.ts utility — computeLivePickStatus(market, pick,
+                                              homeTeam, awayTeam,
+                                              live):
+    Takes a pick and its live state and returns one of the three
+    status values. Returns null when the game is not live (status
+    string does not contain 'live' or 'in progress') or when the
+    pick type cannot be assessed mid-game.
+
+    Logic per market:
+      moneyline / safe_balanced / safe_banker:
+        Identifies whether the pick is for the home or away team by
+        substring match. Returns winning/losing/too_close based on
+        current run differential.
+      totals (Over/Under X.5):
+        Compares current run total to the line. Over is winning if
+        total > line; Under is winning if total < line. Tied on the
+        line = too_close. (Note: mid-game totals are incomplete;
+        the status is labelled non-binding in the UI.)
+      run_line:
+        Parses "Team -1.5" / "Team +1.5" and computes whether the
+        current run diff covers the spread.
+
+    NEVER PERSISTED: computeLivePickStatus() is a pure function.
+    The result is display-only and never written to any database
+    table. It does not touch mlb_pick_grades or mlb_prop_grades.
+
+
+PART C — Grade on final (hourly, not 2 AM)
+File: src/grading/grade_mlb_picks_incremental.py  (new)
+
+  Runs every hour as the last step in the refresh-batter-props job.
+
+  Step 1 — Find new finals:
+    Loads all game_ids from mlb_final_predictions and mlb_safe_zone.
+    Queries the games table for their status/period.
+    Applies _is_finished() from grade_mlb_picks.py (unchanged import).
+    Queries mlb_pick_grades for already-graded game_ids.
+    New finals = finished_ids minus graded_ids.
+    If empty: prints "No new final games — nothing to do." and exits.
+
+  Step 2 — Grade (only when new finals exist):
+    Calls grade_mlb_picks.main()         — game pick grades
+    Calls grade_mlb_prop_picks.main()    — prop grades
+    Calls build_mlb_pick_detail.main()   — enriched pick detail
+    Calls build_mlb_prop_detail.main()   — enriched prop detail
+    Calls build_mlb_clv.main()           — CLV computation
+    Calls build_mlb_subscriber_analytics.main() — subscriber track record
+
+  All six steps are imported directly from their existing modules;
+  no logic is duplicated. The hourly job runs the closing-odds
+  snapshot (snap_mlb_odds_closing) before this step, so CLV closing
+  data is already fresh when grades are computed.
+
+
+WORKFLOW CHANGE
+----------------------------------------------------------------------
+File: .github/workflows/mlb_daily_automation.yml  (modified)
+
+Two steps added to the refresh-batter-props job (runs hourly,
+14:00–03:00 UTC, triggered by repository_dispatch from cron-job.org):
+
+  Step added after snap_mlb_odds_closing:
+    name: Refresh live game state (score/inning/outs, display-only)
+    run:  python -m src.ingestion.sync_mlb_live_state
+
+  Step added after generate_mlb_player_props:
+    name: Grade newly-final games and rebuild detail/CLV/subscriber analytics
+    run:  python -m src.grading.grade_mlb_picks_incremental
+
+Order matters: odds snapshot runs first so CLV has closing data when
+the incremental grader runs the CLV rebuild for newly-finished games.
+
+The morning full-engine job (run-mlb-engine at 08:00 UTC) is
+unchanged — grade_mlb_results still runs there as a safety net.
+
+
+GRADING INTEGRITY — GUARDS UNCHANGED
+----------------------------------------------------------------------
+
+The following guards from grade_mlb_picks.py are preserved exactly
+in the incremental grader. They are imported, not reimplemented:
+
+1. FINISHED_STATUSES
+   {"ft", "aot", "f", "final", "game finished", "finished"}
+   A game must have status OR period in this set to be graded.
+
+2. POSTPONED_STATUSES
+   {"postponed", "cancelled", "canceled", "suspended", "post"}
+   Checked first in _is_finished(). A game in this set is NEVER
+   graded, even if status also appears in FINISHED_STATUSES.
+
+3. _is_finished(game)
+   The exact function from grade_mlb_picks.py. Used unchanged in
+   the incremental grader to decide which games are eligible.
+
+4. 0-0 placeholder guard
+   Inside grade_mlb_picks.main(): if home_score == 0 and
+   away_score == 0, the game is skipped ("SKIP 0-0 placeholder").
+   This guard lives in grade_mlb_picks.py and fires automatically
+   when the incremental grader calls its main().
+
+5. VOID conditions (prop picks)
+   Pitcher < 3.0 IP → VOID. Batter ab=0 → VOID. No gamelog → VOID.
+   These are in grade_mlb_prop_picks.py, unchanged, called as-is.
+
+RESULT: The incremental grader cannot grade a game that the morning
+batch would refuse to grade. The two paths produce identical results;
+the only difference is timing (hourly vs next morning).
+
+
+WHAT DOES NOT CHANGE
+----------------------------------------------------------------------
+- grade_mlb_picks.py          — unchanged
+- grade_mlb_prop_picks.py     — unchanged
+- build_mlb_pick_detail.py    — unchanged
+- build_mlb_prop_detail.py    — unchanged
+- build_mlb_clv.py            — unchanged
+- build_mlb_subscriber_analytics.py — unchanged
+- build_mlb_final_picks.py    — unchanged (Layer 1/2 fix from 5ad8d9e intact)
+- sync_mlb_odds.py            — unchanged
+- No soccer files touched
+- No model math or grading formulas changed
+- No pick selection logic changed
+- mlb_live_state is read-only from the grading chain's perspective
+
+
+SMOKE TESTS
+----------------------------------------------------------------------
+
+sync_mlb_live_state (before SQL 090 was applied):
+  Successfully called MLB Stats API and found games across 6 dates:
+    2026-06-18: 9 games
+    2026-06-19: 14 games
+    2026-06-20: 14 games
+    2026-06-21–23: upcoming games
+  Failed only at the upsert step (table didn't exist yet). ✓
+
+grade_mlb_picks_incremental (run against live DB):
+  "No new final games — nothing to do."
+  All finished games already have grades → correct exit. ✓
+
+TypeScript (web/src):
+  npx tsc --noEmit → 0 errors. ✓
+
+Python imports:
+  from src.grading.grade_mlb_picks_incremental import _find_new_finals → OK
+  from src.ingestion.sync_mlb_live_state import main → OK ✓

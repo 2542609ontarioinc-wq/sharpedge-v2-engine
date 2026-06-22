@@ -1,0 +1,63 @@
+MLB LIVE STATE — VERIFICATION SUMMARY
+Date: 2026-06-20
+======================================================================
+
+SQL APPLIED
+----------------------------------------------------------------------
+File:  sql/090_mlb_live_state.sql
+Status: DONE (confirmed by user, 2026-06-20)
+
+Created:
+  TABLE  mlb_live_state  (game_id PK, home/away score, inning,
+                          inning_half, outs, game_status,
+                          home/away pitcher, captured_at)
+  INDEX  idx_mlb_live_state_status  ON mlb_live_state(game_status)
+
+
+SMOKE TEST — sync_mlb_live_state (2026-06-20)
+----------------------------------------------------------------------
+Command:  python -m src.ingestion.sync_mlb_live_state
+
+MLB Stats API calls (bulk, 1 call per date):
+  2026-06-18:  9 games fetched
+  2026-06-19: 14 games fetched
+  2026-06-20: 14 games fetched
+  2026-06-21: 15 games fetched
+  2026-06-22: 13 games fetched
+  2026-06-23: 15 games fetched
+
+Result:
+  75 game(s) upserted to mlb_live_state
+   5 unmatched (games on those dates with no picks — expected)
+
+Table state after run:
+  Total rows: 75
+  Sample rows (most recent):
+
+  game_status  score  inn  half    home_pitcher     away_pitcher
+  Final        2-4    9    Bottom  Shane Drohan     Parker Messick
+  Final        3-9    9    Bottom  Jack Leiter      Joe Ryan
+  Final        3-0    9    Top     Bryan Woo        Shane Baz
+  Final        4-6    9    Bottom  Aaron Nola       Sean Manaea
+  Final        3-4    9    Bottom  Sonny Gray       Trey Yesavage
+
+All sampled rows show correct final scores, innings, and pitcher names.
+Status: PASS ✓
+
+
+WHAT THIS ENABLES GOING FORWARD
+----------------------------------------------------------------------
+Every hourly run of the refresh-batter-props job now:
+
+  1. snap_mlb_odds_closing     — closing odds snapshot (CLV)
+  2. sync_mlb_live_state       — live scores → mlb_live_state
+  3. sync_mlb_lineups          — batting lineups
+  4. refresh_mlb_v4_lineup     — lineup-adjusted predictions
+  5. generate_mlb_player_props — batter props
+  6. grade_mlb_picks_incremental — grade newly-final games + rebuild
+                                   detail / CLV / subscriber analytics
+
+The web layer can now call getMLBLiveState() to get a
+Map<gameId, MLBLiveState> and pass each pick through
+computeLivePickStatus() to show a live "currently winning /
+losing / too close" badge — display-only, never persisted.

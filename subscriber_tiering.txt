@@ -1,0 +1,122 @@
+SharpEdge — Subscriber View Tiering Refinement
+===============================================
+Date: 2026-06-22
+Branch: main (commit 4879cde)
+
+FILE CHANGED
+------------
+web/src/components/MLBSubscriberView.tsx
+
+No grading, model math, edge/probability calculations, qualifying thresholds,
+pipeline, or soccer logic was touched.
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGE 1 — Exactly ONE Bet of the Day
+─────────────────────────────────────────────────────────────────────────────
+Before: calcTier() assigned "Bet of the Day" to every play meeting
+        edge ≥ 5% AND win prob ≥ 70%. Multiple picks could hold the tag.
+
+After:  rawTier() still identifies BotD-bar candidates, but a single
+        promoteTiers() pass runs across ALL visible picks for the selected
+        date and assigns the BotD tag to exactly one play.
+
+Selection logic (in priority order):
+  1. Score = edge × win_probability (highest wins)
+  2. Tie-break 1: higher edge
+  3. Tie-break 2: higher win probability
+
+Eligibility rules:
+  - Must have a real edge signal (safe-zone picks with edge = null are NOT
+    eligible — they have score = 0 and can never be selected)
+  - Must already meet the BotD bar: edge ≥ 5% AND win prob ≥ 70%
+
+Display:
+  - A dedicated "★ BET OF THE DAY" gold hero card renders above the game
+    list. It shows: team matchup with logos, game time, live indicator,
+    the pick with edge / win% / odds stats, and the live score module
+    if the game is currently in progress.
+  - The BotD pick also appears in its game card in the regular list below
+    (gold border, gold BotD badge), so context within the full game is clear.
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGE 2 — Elite tier for runners-up
+─────────────────────────────────────────────────────────────────────────────
+Plays that meet the BotD bar (edge ≥ 5% AND win prob ≥ 70%) but were NOT
+selected as the single Bet of the Day are now labeled "Elite".
+
+Tier hierarchy (top → bottom):
+  ★ Bet of the Day  — gold badge  — single best play by edge × win prob
+    Elite           — violet badge — BotD-bar met, not today's top pick
+    Strong          — green badge  — qualifies (edge ≥ 3%, prob ≥ 65%)
+                                     but below the BotD bar
+
+Type change:
+  Before: tier: "Bet of the Day" | "Strong"
+  After:  tier: "Bet of the Day" | "Elite" | "Strong"
+
+Visual treatment:
+  - Elite pick row:   violet ring, violet "Elite" badge
+  - Elite game card:  violet border (gold reserved for the BotD game)
+  - Elite count pill: shown above the game list when Elite plays exist
+    ("N Elite plays — meets BotD bar, not today's top pick")
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGE 3 — Props capped at 2 per game
+─────────────────────────────────────────────────────────────────────────────
+Before: all qualifying player props for a game were shown.
+
+After:  for each game, at most 2 player prop picks are displayed.
+        Selection: top 2 by edge × win_probability (then edge, then prob).
+        Game-level picks (moneyline, totals, run-line, safe-zone) are
+        NOT affected by this cap.
+
+Cap is applied inside buildGroups() before the per-game sort, so the
+two retained props still sort correctly alongside game picks (BotD first,
+then Elite, then Strong within each tier by score).
+
+Footer line updated: "N qualifying plays across M games · 2 props/game max"
+
+─────────────────────────────────────────────────────────────────────────────
+IMPLEMENTATION DETAILS
+─────────────────────────────────────────────────────────────────────────────
+New field on SubPick:
+  score: number   — edge × winProb for ranked picks; 0 for safe-zone picks
+
+New / renamed functions:
+  rawTier(edge, winProb)    — replaces calcTier(); assigns "Bet of the Day"
+                              to any candidate (before promotion pass)
+  promoteTiers(picks)       — finds single best BotD, demotes rest to "Elite";
+                              returns { picks, botdKey }
+  pickSorter(a, b)          — unified sort: tier order → score → edge → prob
+  BetOfTheDayCard           — new component: gold featured card above game list
+  TIER_ORDER                — { "Bet of the Day": 0, "Elite": 1, "Strong": 2 }
+  MAX_PROPS_PER_GAME = 2    — constant controlling the prop cap
+
+Qualifying thresholds (UNCHANGED):
+  EDGE_MIN  = 3   (min model edge % for sharp/prop picks)
+  PROB_MIN  = 65  (min win probability % for all picks)
+  BOTD_EDGE = 5   (BotD-bar: edge required)
+  BOTD_PROB = 70  (BotD-bar: win probability required)
+
+Track record panel (UNCHANGED):
+  isQualified(), isBotD(), computeSegment() are unchanged.
+  The "★ BotD-quality plays" segment in the track record still covers all
+  historical picks that met the BotD bar — this is correct for performance
+  analysis even though only one pick per day gets the live display tag.
+
+─────────────────────────────────────────────────────────────────────────────
+BUILD VERIFICATION
+─────────────────────────────────────────────────────────────────────────────
+npx tsc --noEmit  → exit 0 (clean)
+npm run build     → exit 0
+
+Build output:
+  Route (app)                Revalidate  Expire
+  ○ /                               30s      1y
+  ○ /_not-found
+  ○ /apple-icon
+  ○ /icon
+  ƒ /icons/[size]
+  ƒ /landing
+  ○ /manifest.webmanifest
+  All 7 routes compiled, no warnings.

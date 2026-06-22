@@ -1,0 +1,124 @@
+Soccer Pick Diagnosis — June 22, 2026
+======================================
+Diagnosed at: 2026-06-22 12:17 PM Toronto
+
+Verdict: Both (a) thin offseason slate AND (b) pipeline not running today. Details below.
+
+
+1. FIXTURES IN DB FOR NEXT 7 DAYS
+-----------------------------------
+300 soccer games exist in `games` for June 22–29.
+
+  league_key=1 (pre-World Cup international friendlies): 12 games
+    - June 22: Argentina vs Austria, Norway vs Senegal, Jordan vs Algeria, France vs Iraq
+    - June 23: England vs Ghana, Portugal vs Uzbekistan, Panama vs Croatia, Colombia vs Congo DR
+    - June 24: Switzerland vs Canada, Bosnia & Herzegovina vs Qatar, Morocco vs Haiti, Scotland vs Brazil
+
+  Other 288 games: Estonian top/second division (1126), Belarusian leagues (667), Brazilian
+  Série B (75), Swedish lower divisions (114/115), Georgian league (327), Latvian (658/661),
+  Norwegian lower (776), South African lower (845), etc.
+
+Are major club leagues in season? NO.
+  Premier League, La Liga, Bundesliga, Serie A, Ligue 1 — all off-season (summer break,
+  June–August). The only notable content is the pre-FIFA-World-Cup-2026 international slate.
+
+
+2. WHEN DID SOCCER INGESTION LAST RUN?
+----------------------------------------
+  games.last_synced_at        -> June 21, 2026 at 12:34 UTC
+  soccer_odds.captured_at     -> June 21, 2026 at 12:35 UTC
+  soccer_safe_zone.created_at -> June 21, 2026 at 12:44 UTC
+  soccer_market_value.created_at -> June 21, 2026 at 12:47 UTC
+  final_pro_soccer_picks.created_at -> June 21, 2026 at 12:47 UTC
+
+Nothing has updated today (June 22). The daily workflow fires at 0 6 * * * (6 AM UTC = 2 AM
+Toronto), which means the June 22 run should have completed 10+ hours ago. It hasn't touched
+the DB. The run either didn't fire or failed silently — check GitHub Actions logs to confirm.
+
+Today's 4 international friendlies (Argentina/Austria etc.) have last_synced_at of June 19–20
+and ZERO odds rows in soccer_odds.
+
+
+3. IS THE PIPELINE IN AUTOMATION?
+-----------------------------------
+Yes, two workflows:
+
+  soccer_daily_automation.yml:
+    - Runs `scripts.run_sharp_engine` daily at `0 6 * * *` UTC (2 AM Toronto)
+    - Also grades results after each run
+    - June 22 run: no evidence it fired (no data updated)
+
+  soccer_live_monitor.yml:
+    - Runs `scripts.run_soccer_live_monitor` every 10 minutes (`*/10 * * * *`)
+    - Uses WEATHER_API_KEY (not OPENWEATHER_API_KEY) — minor env var name discrepancy vs daily
+
+Note from CLAUDE.md: The daily workflow invokes run_sharp_engine (canonical), but an older
+note says the workflow used to call run_full_soccer_engine. Confirm which is actually in the
+workflow file before editing.
+
+
+4. PICKS VS. FILTERED — JUNE 21 PIPELINE RUN
+----------------------------------------------
+Full funnel for June 21:
+
+  Stage                          | Count | Notes
+  -------------------------------|-------|----------------------------------------------
+  Games in DB (June 21)         | ~70   | Internationals + summer league games
+  Entered soccer_safe_zone      |   2   | Belgium/Iran + Spain/Saudi Arabia (June 21)
+                                 |       | Tunisia/Japan also June 21
+  Had bookmaker odds (soccer_odds)|  1   | Only Belgium/Iran had Odds API coverage
+  Reached soccer_market_value   |   1   | Spain/Saudi Arabia + Tunisia/Japan: no odds
+  Final published pick           |   1   | Belgium vs Iran, Over 2.5, Bovada @1.81,
+                                 |       | tier=Playable Value, safety_score=100, value=74.94
+
+Why are the other 288+ games invisible?
+  soccer_odds covers only ~13 distinct games total across all time — all high-profile
+  internationals (France/Senegal, Iraq/Norway, Belgium/Egypt, Saudi Arabia/Uruguay, etc.)
+  from June 15–21. Every other game in the DB (Estonian leagues, Brazilian Série B, Swedish
+  lower divisions) returns ZERO odds from the Odds API. Without odds there is no implied
+  probability, no edge, no value rating, no pick. They never enter the value/safety pipeline.
+
+
+5. THE ONE PICK ON THE FRONTEND
+---------------------------------
+Belgium vs Iran (game_date=2026-06-21, pick_run_date=2026-06-21) is yesterday's pick.
+  - Generated: June 21 at 12:47 UTC
+  - Game status in DB: NS (Not Started) — live monitor hasn't settled/graded it yet
+  - It's surfacing on the frontend as the only visible pick because nothing ran today
+
+Today's pipeline: 0 picks, 0 odds rows for June 22 games, 0 safe_zone entries for June 22.
+
+
+6. ROOT CAUSE SUMMARY
+----------------------
+All three factors are compounding, ranked by severity:
+
+  (b) PIPELINE NOT RUNNING — immediate blocker
+      The June 22 6 AM UTC run produced no output. The 4 international friendlies today are
+      sitting in the games table with stale June 19–20 timestamps and zero odds. If the
+      pipeline had run this morning, there's a reasonable chance it would have found Odds API
+      coverage for Argentina/Austria and France/Iraq and produced 1–2 picks.
+
+  (a) THIN OFFSEASON SLATE — real and ongoing
+      Every major European club league is off-season. The only content with Odds API coverage
+      is the pre-World Cup international prep schedule. Even on a working pipeline day, you're
+      looking at 1–4 picks maximum until club seasons restart in August.
+
+  (c) ODDS COVERAGE IS THE STRUCTURAL FILTER BOTTLENECK — not a code issue
+      Of 300 games in the DB over the next 7 days, the Odds API returns prices for ~10–15 of
+      them (the big international friendlies only). The other 285+ summer-league games don't
+      have bookmaker coverage — no odds means no value calculation means no pick. This is not
+      a filter bug; those markets simply don't exist on The Odds API for those leagues.
+
+
+7. FIRST STEPS
+---------------
+  1. Check GitHub Actions -> soccer_daily_automation -> June 22 run -> which step failed
+  2. If the workflow didn't fire at all, check if the repo/schedule is paused or if GitHub
+     disabled the scheduled workflow due to repo inactivity (GitHub disables scheduled
+     workflows after 60 days of no commits)
+  3. If it fired and failed, the most likely failure points are:
+       - sync_soccer_odds: Odds API quota exhausted or key issue
+       - sync_next_3_days_soccer: API-Sports rate limit
+       - Any step that calls external APIs (first 4 steps of run_sharp_engine)
+  4. Trigger a manual workflow_dispatch run and watch the logs

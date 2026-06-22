@@ -1,0 +1,135 @@
+Soccer Pipeline Fix — June 22, 2026
+=====================================
+Commit: 5f54fcf
+Branch: main
+
+
+ROOT CAUSE
+----------
+Two compounding bugs caused the pipeline to silently produce 0 picks even
+when the Odds API returns coverage. GitHub also dropped the 6 AM UTC scheduled
+run on June 22 (no June 22 run appears in gh run list), but even if it had
+fired, the code bugs below would have produced 0 picks.
+
+Bug 1 — sync_soccer_odds: INSERT instead of delete-then-insert
+  Every pipeline run appended new odds rows without clearing the previous
+  day's rows. After 6 daily runs, soccer_odds had 1,144 rows with
+  game_id=NULL. Newly inserted rows from the current run landed at the
+  bottom of that pile.
+
+Bug 2 — match_odds_to_games: hard LIMIT 1000 on both queries
+  The script fetched unmatched odds with LIMIT 1000 (no ordering) and
+  all soccer games with LIMIT 1000. The games table had 2,152 rows, so
+  today's freshly synced fixtures were beyond the cutoff. The matcher
+  scanned only stale historical rows and matched 0. Affected games today:
+    - IK Oddevold vs Ljungskile SK (name: "IK Oddevold" vs "Oddevold")
+    - Shelbourne Dublin vs Bohemians (name: "Shelbourne Dublin" vs "Shelbourne")
+    - Varbergs BoIS vs Landskrona BoIS (matched at 0.95 once fixed)
+    - Örebro SK vs Sandvikens IF (unicode: "Örebro" vs "Orebro")
+    - Ponte Preta vs Grêmio Novorizontino (suffix mismatch, matched at 0.89)
+
+
+FIXES APPLIED
+-------------
+1. src/ingestion/sync_soccer_odds.py
+   Before inserting, delete all soccer_odds rows where
+   captured_at >= today UTC. This makes every run idempotent:
+   re-running the pipeline on the same day replaces that day's odds
+   rather than accumulating duplicates. Historical rows (prior days)
+   are untouched.
+
+2. src/ingestion/match_odds_to_games.py
+   - Odds query: added .gte('captured_at', 24h_ago) so only fresh rows
+     are processed. Stale unmatched rows from prior days are ignored.
+   - Games query: replaced LIMIT 1000 with .gte('game_date', today)
+     .lte('game_date', today+7d) — only upcoming games are candidates,
+     so the query stays well under any row limit as the table grows.
+
+3. .github/workflows/soccer_daily_automation.yml
+   Cron shifted from "0 6 * * *" to "0 10 * * *" (10 AM UTC = 6 AM
+   Toronto). The 6 AM UTC slot was running 6-10 hours late on June 19-21
+   and missed entirely on June 22. 10 AM UTC is a less congested slot.
+
+4. CLAUDE.md
+   Removed stale note claiming the workflow calls run_full_soccer_engine.
+   It was updated to run_sharp_engine in commit 11e8053. Corrected to
+   reflect the actual state.
+
+
+VERIFICATION — FULL ENGINE RUN (June 22, manual)
+-------------------------------------------------
+All 43 steps of scripts/run_sharp_engine succeeded:
+
+  Step  1: sync_next_3_days_soccer         79 + 97 + 139 + 94 fixtures synced
+  Step  2: sync_soccer_details             50 priority games enriched
+  Step  3: sync_soccer_odds                310 rows saved (cleared today's first)
+  Step  4: match_odds_to_games             5 fuzzy matches resolved:
+                                             IK Oddevold → Oddevold (0.92)
+                                             Varbergs BoIS → Varbergs BoIS FC (0.95)
+                                             Örebro SK → Orebro SK (0.85)
+                                             Shelbourne Dublin → Shelbourne (0.87)
+                                             Ponte Preta → Ponte Preta (0.89)
+  Steps 5-6: historical + deep history     297 + 414 rows upserted
+  Steps 7-15: team stat/rolling/features   581 team profiles built
+  Steps 16-21: per-game features           form, strength, rest/travel, lineup, injury
+  Steps 22-26: Dixon-Coles + BTTS + models 53 DC rows, 100 BTTS, 53 cards, 53 corners
+  Step 27: multi-market selection          27 sharp picks, 26 skipped (no odds)
+  Steps 28-29: calibration                 Calibration map built; 35 honest edges
+  Step 30: data quality gate               35 rows
+  Steps 31-37: pro features                match features, weather, matchup features
+  Steps 38-41: value/safety/calibration    23 market value rows, 32 safety flags
+  Step 42: build_final_pro_soccer_picks    1 current pick, 19 history rows
+  Step 43: clean_soccer_duplicates         Deduplicated prediction tables
+
+
+TODAY'S PICKS (June 22, 2026)
+------------------------------
+Games with Odds API coverage today: 8
+  - Argentina vs Austria        (game_id matched directly)
+  - France vs Iraq              (game_id matched directly)
+  - IK Oddevold vs Ljungskile SK (fuzzy matched)
+  - Ponte Preta vs Novorizontino (fuzzy matched)
+  - Shamrock Rovers vs Derry City (game_id matched directly)
+  - Shelbourne vs Bohemians      (fuzzy matched)
+  - Varbergs BoIS FC vs Landskrona BoIS (fuzzy matched)
+  - Orebro SK vs Sandviken       (fuzzy matched)
+
+Published picks (final_pro_soccer_picks):
+
+  Game:      Argentina vs Austria
+  Date:      2026-06-22
+  Pick:      Over 2.5 goals
+  Bookmaker: Bovada
+  Odds:      1.94 (American: -107)
+  Tier:      Strong Value
+  Value:     78.82
+  Safety:    100.0
+  Matchup:   57.65
+  Confidence: Elite
+  Notes:     Calibrated model confidence 79.71% -> 72.28%; no-vig 49.61%;
+             real edge 22.67% after calibration
+
+Why only 1 pick?
+  France vs Iraq had odds but dropped to [no-odds] at the calibration step
+  (likely a game_id mismatch between duplicate game records — separate issue).
+  Shamrock/Derry + Shelbourne/Bohemians + Swedish/Brazilian games had odds
+  but no model predictions (not in the Dixon-Coles priority team set).
+  Most other games with safe-zone picks had no bookmaker odds at all — this
+  is expected and correct. No picks are forced for games without odds.
+
+
+WHAT TO EXPECT GOING FORWARD
+------------------------------
+- Daily schedule now fires at 10 AM UTC (6 AM Toronto).
+- sync_soccer_odds is idempotent — re-runs on the same day are safe.
+- match_odds_to_games will correctly process fresh odds even as the games
+  table grows past 2,000+ rows.
+- June 23 upcoming games with potential Odds API coverage:
+    England vs Ghana
+    Portugal vs Uzbekistan
+    Panama vs Croatia
+    Colombia vs Congo DR
+  Expect 1-4 picks if odds are live by 10 AM UTC.
+- Major club leagues (Premier League, La Liga, Bundesliga, etc.) are
+  off-season until August. Until then, picks will be sparse and drawn
+  entirely from high-profile international friendlies.

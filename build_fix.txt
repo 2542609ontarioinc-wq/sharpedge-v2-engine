@@ -1,0 +1,64 @@
+SharpEdge — Build Error Fix
+============================
+Date: 2026-06-22
+Branch: main (commit 4f9cab8)
+
+ERROR
+-----
+Vercel TypeScript build failure in web/src/components/LandingAdminPreview.tsx line 51:
+  "Property 'gradedPicks' does not exist on type ... MLBSubscriberView props."
+
+ROOT CAUSE
+----------
+MLBSubscriberView.tsx was substantially rewritten in a prior session but never
+committed. The rewrite replaced an async Supabase fetch pattern (useEffect +
+getMLBSubscriberResults) with a gradedPicks?: MLBPickDetail[] prop + client-side
+computeSegment logic. Three dependent changes were also left uncommitted.
+
+Vercel built from HEAD, which still had the old MLBSubscriberView signature
+(no gradedPicks prop). LandingAdminPreview.tsx passed gradedPicks={data.gradedPicks}
+to it, causing the type error. The prop is genuinely needed — SubscriberTrackRecord
+uses gradedPicks to compute segment stats and CLV beat-rate. Simply removing the
+prop would have silenced the error but broken the track record panel.
+
+DECISION
+--------
+Committed the correct local implementation. gradedPicks IS the right prop —
+the subscriber view uses it to drive the full historical track record panel
+(win/loss record, ROI, avg edge, avg CLV, CLV beat-rate by date range).
+
+FILES COMMITTED (4)
+-------------------
+web/src/components/MLBSubscriberView.tsx
+  - Removed: useEffect + getMLBSubscriberResults Supabase async fetch
+  - Added:   gradedPicks?: MLBPickDetail[] prop (optional, defaults to [])
+  - Added:   isQualified(), isBotD(), computeSegment() pure functions
+  - Rewrote: SubscriberTrackRecord to accept gradedPicks and compute locally
+  - Added:   showLast7 date filter support via DateSelector
+
+web/src/components/PicksView.tsx
+  - Added:   gradedPicks={mlbDiagnostics.picks} to MLBSubscriberView call
+
+web/src/components/DateSelector.tsx
+  - Added:   showLast7?: boolean optional prop
+  - Renders: <option value="last7">Last 7 days</option> when showLast7=true
+
+web/src/components/MLBDiagnosticsView.tsx
+  - Added:   applyDateFilter() helper supporting "last7" in addition to "all"/date
+  - Uses:    showLast7 on DateSelector
+
+BUILD VERIFICATION
+------------------
+npx tsc --noEmit  → exit 0 (clean)
+npm run build     → exit 0
+
+Build output:
+  Route (app)                Revalidate  Expire
+  ○ /                               30s      1y
+  ○ /_not-found
+  ○ /apple-icon
+  ○ /icon
+  ƒ /icons/[size]
+  ƒ /landing
+  ○ /manifest.webmanifest
+  All 7 routes compiled, no warnings.

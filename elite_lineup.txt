@@ -1,0 +1,140 @@
+SharpEdge — Elite Section + Lineup-Confirmed Auto-Expand
+==========================================================
+Date: 2026-06-22
+Branch: main (commit d5a0631)
+
+FILE CHANGED
+------------
+web/src/components/MLBSubscriberView.tsx
+
+No grading, model math, edge/probability calculations, qualifying thresholds,
+prop generation, pipeline, or soccer logic was touched.
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGE 1 — Grouped Elite section
+─────────────────────────────────────────────────────────────────────────────
+Before: Elite plays were scattered inside their individual game cards.
+        A small count pill ("N Elite plays") was the only dedicated display.
+
+After:  A dedicated ELITE section renders between the ★ BotD hero card and
+        the full game list — the same dual-display pattern as Bet of the Day.
+        Elite plays still appear in their game cards in the list below.
+
+Layout order (top → bottom):
+  1. ★ Bet of the Day hero card (gold)
+  2. Elite section (violet)          ← NEW
+  3. Full game list (all games)
+
+NEW COMPONENTS
+--------------
+ElitePickCard({ pick, liveState })
+  - Violet-tinted mini-card per Elite pick
+  - Shows: teams + logos (16px), game time, live indicator (pulsing dot if live)
+  - Pick display: market label (violet), pick label (bold), player name if prop
+  - Stats: Edge (green), Win% (violet), Odds (mono muted) — right-aligned
+  - Styled: border-violet-500/25 bg-bg-2/50
+
+EliteSection({ picks, liveState })
+  - Renders only when elitePicks.length > 0
+  - Container: rounded-2xl border-violet-500/30 bg-violet-500/5
+  - Header retains the existing Elite count label:
+      "N Elite plays — meets BotD bar, not today's top pick"
+    (violet pill with count + muted description — same content as the old pill,
+    now the section header rather than a standalone element)
+  - Lists all ElitePickCards inside
+
+Usage in MLBSubscriberView main export:
+  const elitePicks = visiblePicks.filter((p) => p.tier === "Elite");
+  ...
+  <EliteSection picks={elitePicks} liveState={liveState} />
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGE 2 — Lineup-confirmed badge + auto-expand props
+─────────────────────────────────────────────────────────────────────────────
+BACKGROUND
+  Player props are generated only after a game's batting lineup is confirmed
+  (~90 min pre-game via the hourly job). Batter props (h_r_rbi market,
+  playerType === "batter") are generated when the batting order is submitted.
+  Pitcher-only props are generated earlier and do NOT indicate lineup confirmation.
+
+DETECTION
+  In MLBSubscriberView (before rendering):
+
+    const lineupConfirmedGameIds = new Set(
+      playerProps
+        .filter((p) => p.playerType === "batter")
+        .map((p) => p.gameId)
+    );
+
+  A game is lineup-confirmed if it has at least one batter prop in the raw
+  playerProps array (before qualifying-threshold filtering). This is correct
+  because the presence of batter props in the DB is the proxy for lineup lock.
+
+  lineupConfirmedGameIds is passed to each GameCard as:
+    lineupConfirmed={lineupConfirmedGameIds.has(g.gameId)}
+
+GAME CARD CHANGES (GameCard component)
+  Props section is now COLLAPSIBLE, separate from non-prop picks:
+
+  - nonPropPicks (sharp / balanced / banker):
+      Always rendered in the main picks area. Unchanged.
+
+  - propPicks (props):
+      Rendered inside a collapsible section with a toggle button.
+      Initial open state:
+        const [propsOpen, setPropsOpen] = useState(lineupConfirmed && hasPropPicks);
+      — auto-expanded when lineup is confirmed AND qualifying props exist.
+      — collapsed by default when lineup is not confirmed.
+
+  Game header (below team names / game time):
+    Lineup confirmed  → "✓ Lineup confirmed" in text-elite (green)
+    Lineup pending    → "Lineup pending" in text-muted/45 (shown only if
+                        there are visible prop picks — i.e. pitcher-only props)
+    No props at all   → no lineup status shown
+
+  Props toggle button shows:
+    "⚾ Player Props  [N]  ✓ Lineup confirmed"  when confirmed
+    "⚾ Player Props  [N]  Lineup pending"       when not confirmed
+    "▲" / "▼" chevron on the right
+
+  The 2-props-per-game cap (MAX_PROPS_PER_GAME = 2) is applied before the
+  split, so the capped count is what appears in the toggle button and what
+  renders in the collapsed/expanded section.
+
+STATES MATRIX
+  lineupConfirmed = true  + propPicks.length > 0  → props section visible, auto-expanded
+  lineupConfirmed = true  + propPicks.length = 0  → "✓ Lineup confirmed" badge only, no toggle
+  lineupConfirmed = false + propPicks.length > 0  → "Lineup pending" badge + toggle, collapsed
+  lineupConfirmed = false + propPicks.length = 0  → no lineup badge, no toggle
+
+─────────────────────────────────────────────────────────────────────────────
+WHAT WAS KEPT UNCHANGED
+─────────────────────────────────────────────────────────────────────────────
+- All qualifying thresholds (EDGE_MIN=3, PROB_MIN=65, BOTD_EDGE=5, BOTD_PROB=70)
+- Single BotD selection (promoteTiers) and BotOfTheDayCard
+- MAX_PROPS_PER_GAME = 2 cap and pickSorter ranking
+- PickRow component (BotD/Elite/Strong badges, source badges, stats)
+- GameCard team logos, game time, live indicator, live score module
+- Elite tier in game cards (picks still appear in game cards below, with
+  violet ring and Elite badge — same as before)
+- Honesty banners and INTERNAL/paper-only disclaimers
+- Subscriber Track Record panel (isQualified, isBotD, computeSegment, segments)
+- Date selector and date filtering
+- Soccer logic, grading, model math, pipeline — not touched
+
+─────────────────────────────────────────────────────────────────────────────
+BUILD VERIFICATION
+─────────────────────────────────────────────────────────────────────────────
+npx tsc --noEmit  → exit 0 (clean)
+npm run build     → exit 0
+
+Build output:
+  Route (app)                Revalidate  Expire
+  ○ /                               30s      1y
+  ○ /_not-found
+  ○ /apple-icon
+  ○ /icon
+  ƒ /icons/[size]
+  ƒ /landing
+  ○ /manifest.webmanifest
+  All 7 routes compiled, no warnings.

@@ -1,0 +1,238 @@
+ODDS / EDGE / CLV DIAGNOSIS
+Generated: 2026-06-20
+======================================================================
+
+SYMPTOM
+----------------------------------------------------------------------
+All 51 graded MLB picks have edge_flag="no-odds", model_edge=null, and
+CLV is entirely empty, even though:
+  - mlb_odds_snapshots has 23,532 rows
+  - 13 picks in mlb_final_predictions currently show edge_flag="REAL"
+  - The subscriber track record therefore shows 0 qualifying plays
+
+
+DATA STATE CONFIRMED
+----------------------------------------------------------------------
+mlb_pick_grades:          51 rows  |  all edge_flag='no-odds'  |  model_edge=null
+mlb_final_predictions:    76 rows  |  62 no-odds, 13 REAL
+  - 13 REAL picks: all updated_at=2026-06-20, all for UPCOMING games
+  - 22 finished-game predictions: all updated_at=2026-06-20, all no-odds
+mlb_safe_zone:            22 rows for graded games — all balanced_novig_pct=null
+mlb_clv_tracking:         0 CLV rows computed
+mlb_odds_snapshots:       23,532 rows total; earliest=2026-06-19T20:32:08 UTC
+Graded game dates:        2026-06-18 (18 picks) and 2026-06-19 (33 picks)
+
+
+======================================================================
+BREAKPOINT 1 — PRIMARY BUG
+The picks builder overwrites finished-game predictions daily
+======================================================================
+
+WHERE IT BREAKS
+  build_mlb_final_picks.py — main() query (line ~472) + upsert (lines ~619, 622)
+  sync_mlb_odds.py         — mlb_odds purge (lines ~172–173)
+
+WHAT HAPPENS (step by step each day)
+
+  Step A — sync_mlb_odds.py runs:
+    supabase.table("mlb_odds").delete().eq("sport_key", "baseball_mlb")
+    → ALL odds rows deleted.
+    → Re-fetches only CURRENT/UPCOMING games from the Odds API.
+    → Finished games get no new odds. mlb_odds is now upcoming-only.
+
+  Step B — build_mlb_final_picks.py runs:
+    SELECT * FROM mlb_run_predictions
+    WHERE model_version = 'poisson_v2'
+    ORDER BY created_at DESC LIMIT 500
+    → Returns 76 rows: 22 FINISHED games + 54 upcoming.
+    → No date or status filter.
+
+  Step C — for each finished game in that list:
+    _get_odds_rows(gid) → [] (no rows; they were just deleted in Step A)
+    novig_result = _resolve_novig([], market, pick) → None
+    flag = "no-odds"; edge = None; book_odds = None
+    → fp_row = {edge_flag:"no-odds", model_edge:None, odds_decimal:None, ...}
+    supabase.table("mlb_final_predictions").upsert(fp_row, on_conflict="game_id")
+    → OVERWRITES the original REAL prediction with a no-odds version.
+    supabase.table("mlb_safe_zone").upsert(sz_row, on_conflict="game_id")
+    → OVERWRITES balanced_novig_pct=None, banker_novig_pct=None.
+
+  Step D — grade_mlb_picks.py runs:
+    SELECT * FROM mlb_final_predictions
+    → Reads the now-corrupted edge_flag='no-odds', model_edge=None.
+    Copies them directly into mlb_pick_grades:
+      row["edge_flag"]  = pred.get("edge_flag")   → "no-odds"
+      row["model_edge"] = pred.get("model_edge")  → None
+    supabase.table("mlb_pick_grades").upsert(row, ...)
+    → All graded picks inherit no-odds/null from the overwritten prediction.
+
+CONFIRMED BY DATA
+  - All 22 finished-game rows in mlb_final_predictions show updated_at=2026-06-20
+    (today), not the date the pick was originally generated.
+  - The 13 REAL predictions are all for games with status=NS (not started).
+  - mlb_run_predictions has 76 rows: 22 finished, 54 upcoming. Every run
+    re-processes all 76.
+
+IMPACT
+  100% of graded picks permanently lose their original edge_flag, model_edge,
+  odds_decimal, and (via mlb_safe_zone) their opening novig. The subscriber
+  qualification check in build_mlb_pick_detail.py requires edge_flag='REAL',
+  so 0 picks ever qualify. CLV opening novig is also destroyed (see Breakpoint 2).
+
+RECOMMENDED FIX
+  Option A (preferred): In build_mlb_final_picks.py, join mlb_run_predictions
+  to the games table and skip any game whose status is in the finished set
+  ('FT', 'F', 'Final', 'finished', 'game finished', 'AOT'). Add this guard
+  before the odds lookup loop so the pick row is never built for a settled game.
+
+  Option B (safer, no schema change): Change both upserts in
+  build_mlb_final_picks.py from:
+      .upsert(row, on_conflict="game_id")
+  to INSERT + ON CONFLICT DO NOTHING (via the ignoreDuplicates flag or a
+  raw SQL INSERT ... ON CONFLICT (game_id) DO NOTHING). This lets the first
+  real-odds write stick and subsequent no-odds re-runs bounce off harmlessly.
+
+  Option A is cleaner (avoids wasted compute on finished games). Option B is
+  a safe backstop regardless.
+
+
+======================================================================
+BREAKPOINT 2 — CLV: GATE CORRECTLY REJECTS ALL PICKS (cascades from #1)
+======================================================================
+
+WHERE IT BREAKS
+  build_mlb_clv.py — main() line ~265
+
+CODE
+  if g.get("no_odds") or (g.get("edge_flag") or "") == "no-odds":
+      skipped_no_opening += 1
+      continue   # ← ALL 51 graded picks hit this
+
+WHY THIS GATE IS CORRECT
+  CLV = closing_novig - opening_novig. Without a real opening novig (i.e. a
+  real price at the time of pick generation) the delta is meaningless. The gate
+  is working as intended. The problem is that the input is corrupted by #1.
+
+SECOND LAYER: even without the gate, opening_novig would still be null
+  For sharp picks:  mlb_final_predictions.market_implied_probability → null
+  For safe-zone:    mlb_safe_zone.balanced_novig_pct → null
+  Both overwritten to null by Breakpoint 1. The check at line ~295:
+      if opening_novig is None: skipped_no_opening += 1; continue
+  would catch everything anyway.
+
+IMPACT
+  0 CLV rows ever computed. mlb_clv_tracking is empty.
+  mlb_pick_detail.clv and beat_close are null on all rows.
+  Subscriber track record shows avg_clv = "(no data)".
+
+FIX
+  Cascades automatically from fixing Breakpoint 1. Once predictions stop being
+  overwritten, real opening novigs survive, the gate passes REAL picks through,
+  and CLV computation proceeds normally.
+
+
+======================================================================
+BREAKPOINT 3 — CLOSING SNAPSHOTS DON'T COVER HISTORICAL GAMES
+(structural gap; self-heals going forward)
+======================================================================
+
+WHERE IT BREAKS
+  mlb_odds_snapshots — first row captured at 2026-06-19T20:32:08 UTC
+
+THE TIMING PROBLEM
+  Graded games span 2026-06-18 and 2026-06-19. Most of those games started
+  before snap_mlb_odds_closing.py was first run. Result:
+
+    19 of 22 graded games: zero closing snapshots
+     3 of 22 graded games: snapshots exist (those that started after 20:32 UTC
+                           on 2026-06-19)
+
+  The 3 covered games have valid pre-pitch data:
+    game 0d9f102a: 431 snaps, last capture 22:16 vs first pitch 22:41  ✓
+    game 31882243: 568 snaps, last capture 22:16 vs first pitch 00:41  ✓
+    game 5443bf11:   1 snap,  last capture 20:32 vs first pitch 23:11  ✓ (thin)
+
+  Markets present: h2h, totals, spreads (and alternate_* from opening run).
+  The _closing_novig() logic correctly filters to captured_at < commence_time.
+  No code bug here.
+
+IMPACT ON CURRENT DATA
+  Even after fixing Breakpoint 1, these 19 games will still have no CLV because
+  the closing data simply doesn't exist for them. They will be excluded from CLV
+  stats (not counted as 0), which is the documented and correct behavior.
+
+FIX NEEDED
+  None. The snapper accumulates continuously. Every game going forward that has
+  pick data will also have ≥1 closing snapshot. Historical gap is permanent but
+  narrow (only affects 2026-06-18 and early 2026-06-19 games).
+
+NOTE ON ALTERNATE MARKETS IN SNAPSHOTS
+  alternate_spreads (267 rows) and alternate_totals (358 rows) appear in
+  mlb_odds_snapshots for graded games. These come from sync_mlb_odds.py's
+  opening snapshot write, not snap_mlb_odds_closing.py. The CLV builder's
+  comment is accurate: snap_mlb_odds_closing only captures standard h2h/
+  totals/spreads. Alternate-line safe-zone picks (e.g. "Over 6.5") will
+  find no CLV closing match and be excluded — this is intentional.
+
+
+======================================================================
+BREAKPOINT 4 — SAFE-ZONE ODDS: PARTLY COLLATERAL, PARTLY BY DESIGN
+======================================================================
+
+ALL 29 safe-zone graded picks (safe_balanced + safe_banker) have no_odds=True.
+Two independent reasons:
+
+REASON A — Collateral damage from Breakpoint 1 (fixable)
+  mlb_safe_zone is upserted on game_id in build_mlb_final_picks.py (line ~622),
+  same daily overwrite pattern. Any safe-zone pick that originally had a real
+  novig via an alternate-line price (e.g. Over 6.5 with a complete 2-way price
+  in mlb_odds at pick time) has balanced_novig_pct overwritten to null. Once
+  Breakpoint 1 is fixed (don't overwrite finished-game records), the novig that
+  existed at pick time is preserved.
+
+REASON B — Structural (by design, not a bug)
+  Safe-zone picks use soft lines: "Over 6.5", "Team +1.5", "Team +2.5".
+  These are alternate-market prices. _sz_novig_and_odds() tries to find a
+  complete 2-way alternate-line price in mlb_odds, but alternate-line books
+  are often incomplete (not all bookmakers post both Over/Under at every line).
+  When no complete pair exists, the function correctly falls back to no-odds.
+  This is expected and documented.
+
+IMPACT ON SUBSCRIBER QUALIFICATION
+  None. _sub_flags_safe() only requires prob >= 65%. No edge or odds needed.
+  Safe-zone picks will qualify as subscriber_qualified once SQL 089 is applied
+  and build_mlb_pick_detail runs.
+
+IMPACT ON CLV
+  CLV for safe-zone picks requires balanced_novig_pct in mlb_safe_zone
+  (this is the opening price). Fix Breakpoint 1 to preserve whatever novig
+  existed at pick time. For picks where the novig was already null at creation
+  (Reason B above), CLV will still be excluded — correctly.
+
+
+======================================================================
+ROOT CAUSE SUMMARY
+======================================================================
+
+  #  What                              Broken where                         Impact                Fix
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────
+  1  Picks builder re-runs on finished  build_mlb_final_picks.py upsert +   ALL picks lose edge,  Skip finished games
+     games with no odds, overwrites     sync_mlb_odds.py daily purge        odds, CLV opening     or INSERT-if-not-exists
+     REAL edge with no-odds                                                  novig
+
+  2  CLV gate correctly rejects all     build_mlb_clv.py line ~265          0 CLV rows ever       Cascades from fix #1
+     picks because edge_flag=no-odds                                         computed
+
+  3  Closing snapper launched after     mlb_odds_snapshots (first row       19/22 graded games    Self-heals going
+     most graded games started          2026-06-19T20:32)                   have no closing data  forward; no code fix
+
+  4  Safe-zone no-odds: partly #1       mlb_safe_zone upsert + alternate-   No subscriber impact; Fix #1 + Reason B
+     collateral, partly structural      line odds availability               CLV opening lost      is by design
+
+THE SINGLE CHANGE THAT UNLOCKS EVERYTHING
+  Prevent build_mlb_final_picks.py from overwriting rows for finished games.
+  Breakpoints 2 and 4 cascade from this. Breakpoint 3 heals on its own.
+  After the fix: re-run the engine on a day with real games in progress,
+  let picks generate with real odds, let games finish, then run the grading
+  chain — grades will carry edge_flag='REAL', CLV will compute for any game
+  that also has closing snapshot data.

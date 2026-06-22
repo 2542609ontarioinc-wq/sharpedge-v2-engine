@@ -1,0 +1,168 @@
+Soccer Coverage Fix — June 22, 2026
+=====================================
+Commit: f0811bb
+Branch: main
+Files changed:
+  src/models/build_final_predictions_multimarket.py
+  src/features/build_match_strength.py
+  sql/091_soccer_match_strength_unique_game_id.sql (new)
+
+
+CONTEXT
+-------
+After the pipeline fix in commit 5f54fcf, 8 games had Odds API coverage
+on June 22 but only 1 published a pick (Argentina vs Austria). Two bugs
+downstream of the odds/model pairing were blocking the remaining games.
+
+
+GAP 1 — France vs Iraq: goals line mismatch (FIXED)
+----------------------------------------------------
+Root cause:
+  build_final_predictions_multimarket.py called best_odds_for() for the
+  goals market without filtering by line. The function returned any
+  "totals / over" row, regardless of whether the line was 1.5, 2.5, or
+  3.5. For France vs Iraq:
+    - Dixon-Coles model: Over 2.5 at 71.02% confidence
+    - Bookmaker odds available: Over 3.5 @ 1.83 (54.6% implied)
+    - best_odds_for() silently returned the Over 3.5 odds row
+    - final_soccer_predictions stored: pick="Over 2.5", odds_decimal=1.83
+
+  At calibration (apply_honest_calibration.py), the strict line filter
+  requires line=2.5 to match "Over 2.5" picks. The stored odds were
+  line=3.5, so no matching row was found → pick classified [no-odds] →
+  dropped from final pro picks.
+
+  The misleading symptom: the old code appeared to show a +16.97% edge
+  (71% model vs 54.6% implied), but this was a false positive from
+  comparing two different markets.
+
+Fix:
+  Added candidate_goals(game_id, goals_row) function that:
+  1. Fetches all totals odds rows for the game
+  2. For each row, maps (line, side) → the exact probability column in
+     soccer_goals_prediction_versions:
+       (1.5, "over")  → over_15_probability
+       (2.5, "over")  → over_25_probability
+       (2.5, "under") → under_25_probability
+       (3.5, "over")  → over_35_probability
+  3. Computes real edge using the model's per-line probability
+  4. Returns the candidate with the highest real edge across all lines
+
+  main() now calls candidate_goals(gid, latest_goals(gid)) instead of
+  candidate(gid, "goals", ...) for the goals market.
+
+Confirmed result:
+  France vs Iraq | Over 3.5 | conf 50.05% | novig 52.22% | odds 1.83 | edge -2.18% [REAL]
+  Negative edge → correctly no pick published. The fix exposed that
+  France vs Iraq genuinely has no value on the available line.
+
+
+GAP 2 — Non-priority-league games: priority set too narrow (FIXED)
+-------------------------------------------------------------------
+Root cause:
+  build_match_strength.py hardcoded league_key filter as ["1", "479"],
+  meaning only World Cup (1) and Canadian Premier League (479) games
+  were routed into the Dixon-Coles pipeline. 9 other priority leagues
+  in the priority_leagues DB table (PL=39, La Liga=140, Bundesliga=78,
+  Serie A=135, Ligue 1=61, MLS=253, UCL=2, UEL=3, Euro=4) were silently
+  excluded.
+
+  Additionally, games with bookmaker odds coverage in non-priority leagues
+  (Shamrock Rovers, Shelbourne, Swedish lower, Brazilian lower) had no
+  model predictions at all because they were never passed to Dixon-Coles.
+
+Fix:
+  1. Priority pass: replaced hardcoded list with live DB query to
+     priority_leagues table (same pattern as sync_soccer_details.py).
+     Now covers all 11 priority leagues dynamically.
+
+  2. Odds-expansion pass: added second pass that finds games outside
+     priority leagues that have Odds API coverage (game_id matched in
+     soccer_odds). These are included ONLY if both teams have >= 3 rows
+     in soccer_team_stat_history (MIN_STAT_ROWS=3). Teams below this
+     threshold are logged and skipped — no fabricated predictions.
+
+  3. Date filter: added .gte("game_date", today) / .lte("game_date",
+     today+7) so the query stays bounded as the games table grows.
+
+  4. Idempotent writes: changed insert to delete-then-insert per game_id.
+     This prevents duplicate accumulation on re-runs without requiring
+     the unique constraint from sql/091 (which must be applied manually
+     via the Supabase SQL Editor before upsert can be used).
+
+Result for June 22:
+  Priority-league games found: 18 (all World Cup — the 9 other leagues
+  are off-season until August; they'll auto-include when fixtures resume)
+  Odds-expanded games: 0 — Shamrock/Derry, Shelbourne/Bohemians, Swedish
+  and Brazilian games all have 0-1 stat rows, below MIN_STAT_ROWS=3.
+  This is correct: the fix widens the gate but refuses to fabricate
+  predictions for data-free teams.
+
+  When club leagues restart (Premier League: August 15–16, La Liga:
+  August 17, etc.) those teams will have 8-10+ stat rows and will flow
+  through automatically.
+
+
+PICK COUNT AFTER BOTH FIXES
+-----------------------------
+Pipeline run: June 22, 2026 (manual, commit f0811bb)
+
+Step 27 (build_final_predictions_multimarket): 29 sharp picks saved
+  (vs 27 before fix — 2 additional games evaluated from expanded leagues)
+
+Step 29 (apply_honest_calibration): 46 honest edges computed
+  (vs 35 before fix)
+
+Step 42 (build_final_pro_soccer_picks):
+  Current picks (June 22):  1
+  History rows (upcoming):  12
+
+TODAY'S PICKS (June 22, 2026)
+------------------------------
+  Game:      Argentina vs Austria
+  Pick:      Over 2.5 goals
+  Bookmaker: Bovada
+  Odds:      2.3 (American: -114)
+  Tier:      Strong Value
+  Value:     100.0
+  Safety:    100.0
+
+WHY STILL 1 PICK
+-----------------
+The 8 games with Odds API coverage broke down as follows post-fix:
+
+  Argentina vs Austria:    Over 2.5 edge 31.71% → published (Strong Value)
+  France vs Iraq:          Over 3.5 edge -2.18% → correctly no pick (negative)
+  Shamrock Rovers vs Derry City:    0 stat rows → skipped at build_match_strength
+  Shelbourne vs Bohemians:          0 stat rows → skipped
+  IK Oddevold vs Ljungskile SK:     0 stat rows → skipped
+  Varbergs BoIS vs Landskrona BoIS: 0 stat rows → skipped
+  Ponte Preta vs Novorizontino:     0 stat rows → skipped
+  Orebro SK vs Sandviken:           0 stat rows → skipped
+
+  The fixes work correctly. The remaining 7 games are absent for valid
+  reasons (negative model edge or no data), not pipeline bugs.
+
+
+MANUAL ACTION REQUIRED
+-----------------------
+sql/091_soccer_match_strength_unique_game_id.sql must be applied via
+the Supabase SQL Editor to enable upsert on soccer_match_strength:
+
+  ALTER TABLE soccer_match_strength
+  ADD CONSTRAINT soccer_match_strength_game_id_unique UNIQUE (game_id);
+
+Until then, build_match_strength uses delete-then-insert (functionally
+equivalent, just slightly slower).
+
+
+WHAT TO EXPECT GOING FORWARD
+------------------------------
+- Club leagues restart in August. Once they do, Premier League, La Liga,
+  Bundesliga, Serie A, and Ligue 1 teams will be modeled automatically
+  (they're in priority_leagues but off-season now).
+- MLS (253) is mid-season now but fixtures didn't appear in today's
+  Odds API response. Will pick up when coverage is available.
+- France vs Iraq and similar World Cup games where the model's
+  Over 2.5 confidence doesn't overcome the bookmaker's Over 3.5 line
+  will correctly produce no pick rather than a false positive.

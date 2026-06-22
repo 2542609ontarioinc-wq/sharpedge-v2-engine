@@ -1,0 +1,51 @@
+SharpEdge Landing Page — Build Summary
+=======================================
+Date: 2026-06-22
+Branch: main (commit 25b8c2d)
+
+FILES CREATED
+-------------
+web/src/app/landing/page.tsx       — Next.js server component (data fetch + pick selection)
+web/src/components/LandingPage.tsx — Client component (all sections + modal state)
+
+No existing files were modified. No pipeline, grading, or model logic touched.
+
+PAGE SECTIONS (in order)
+-------------------------
+1. Nav Bar       — SharpEdge logo (red accent), Sign in + Sign up buttons
+2. Hero          — Honest headline, CLV/closing-line subtext, two CTA buttons
+3. Stats Row     — 6 models, 2 sports, CLV, 100% transparent grades (no win% or ROI)
+4. Who We Are    — 70/30 philosophy, publish wins and losses, unproven disclaimer
+5. Free Pick     — Live MLB data, green-bordered card, team logos, responsible gambling line
+6. Pricing       — Free / Pro (gold) / Elite tiers, $— price placeholders
+7. Footer        — 19+, ConnexOntario 1-866-531-2600, "not affiliated with MLB/any league"
+
+PAYMENTS / AUTH STUB CONFIRMATION
+----------------------------------
+- Sign in button       → coming-soon modal (no Supabase auth, no session)
+- Sign up button       → coming-soon modal (no account creation)
+- "Start free" button  → coming-soon modal
+- All pricing CTAs     → coming-soon modal
+- No Stripe, no payment processor, no checkout flow wired anywhere
+- No database writes of any kind
+
+INTERNAL GATE
+-------------
+Flag location: web/src/app/landing/page.tsx, line 5
+Flag name:     LANDING_PAGE_ENABLED
+Current value: false
+
+While false: gold "INTERNAL PREVIEW" ribbon renders above the nav, showing
+exactly which file and line to flip.
+
+To go live: set LANDING_PAGE_ENABLED = true in web/src/app/landing/page.tsx.
+The ribbon disappears and the page is publicly accessible at /landing.
+
+RESPONSIBLE GAMBLING COPY
+--------------------------
+Free pick card: "Unproven model · paper only · 19+ · gamble responsibly · ConnexOntario 1-866-531-2600"
+Footer:         Full 19+ disclaimer, ConnexOntario number, "not affiliated with MLB/any league"
+
+TYPE CHECK
+----------
+npx tsc --noEmit → exit 0 (clean, no errors)
