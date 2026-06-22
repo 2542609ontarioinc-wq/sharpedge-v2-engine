@@ -3,6 +3,15 @@ from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+# Maps (line, side) → the column name in soccer_goals_prediction_versions that
+# holds the model's probability for that exact market.
+LINE_PROB_FIELDS = {
+    (1.5, "over"):  "over_15_probability",
+    (2.5, "over"):  "over_25_probability",
+    (2.5, "under"): "under_25_probability",
+    (3.5, "over"):  "over_35_probability",
+}
+
 
 def num(v, d=0.0):
     try:
@@ -20,10 +29,6 @@ def best_odds_for(game_id, market, pick):
         osel = (o.get("selection") or "").lower()
         if market == "winner" and omkt == "h2h" and pick.lower() == osel:
             matches.append(o)
-        elif market == "goals" and omkt == "totals":
-            target = "over" if "over" in pick.lower() else "under"
-            if osel == target:
-                matches.append(o)
         elif market == "btts" and omkt in ("btts", "both_teams_to_score"):
             yn = "yes" if "yes" in pick.lower() else "no"
             if yn in osel:
@@ -31,6 +36,49 @@ def best_odds_for(game_id, market, pick):
     if not matches:
         return None
     return sorted(matches, key=lambda x: num(x.get("odds_decimal")), reverse=True)[0]
+
+
+def candidate_goals(game_id, goals_row):
+    """Try every available totals line and return the candidate with the best
+    real edge, using the model's per-line probability for whichever line the
+    bookmaker actually offers.  This prevents the old bug where 'Over 2.5'
+    model confidence was compared against 'Over 3.5' bookmaker odds because
+    best_odds_for() didn't filter by line."""
+    if not goals_row:
+        return None
+    rows = (supabase.table("soccer_odds").select("*").eq("game_id", game_id).execute().data)
+    best = None
+    for o in rows:
+        if (o.get("market") or "").lower() != "totals":
+            continue
+        line = num(o.get("line"))
+        sel = (o.get("selection") or "").lower()
+        prob_field = LINE_PROB_FIELDS.get((line, sel))
+        if not prob_field:
+            continue
+        model_conf = num(goals_row.get(prob_field))
+        if model_conf <= 0:
+            continue
+        dec = num(o.get("odds_decimal"))
+        if dec <= 1.0:
+            continue
+        model_prob = model_conf / 100.0
+        implied = 1.0 / dec
+        edge = round((model_prob - implied) * 100, 2)
+        pick = f"{'Over' if sel == 'over' else 'Under'} {line:.1f}"
+        cand = {
+            "market": "goals",
+            "pick": pick,
+            "confidence": round(model_conf, 2),
+            "bookmaker": o.get("bookmaker"),
+            "odds_decimal": o.get("odds_decimal"),
+            "odds_american": o.get("odds_american"),
+            "market_implied_probability": round(implied * 100, 2),
+            "model_edge": edge,
+        }
+        if best is None or edge > best["model_edge"]:
+            best = cand
+    return best
 
 
 def candidate(game_id, market, pick, conf):
@@ -110,7 +158,7 @@ def main():
         seen.add(gid)
         cands = [c for c in (
             candidate(gid, "winner", r.get("winner_pick"), r.get("winner_confidence")),
-            candidate(gid, "goals", r.get("goals_pick"), r.get("goals_confidence")),
+            candidate_goals(gid, latest_goals(gid)),
             candidate(gid, "btts", r.get("btts_pick"), r.get("btts_confidence")),
         ) if c]
         if not cands:
