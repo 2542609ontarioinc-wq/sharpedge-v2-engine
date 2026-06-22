@@ -65,6 +65,14 @@ COMMANDS = [
     #     one hourly closing snapshot (from snap_mlb_odds_closing in the refresh job).
     #     Picks with no closing snapshot are excluded from CLV stats, not counted as 0.
     "python -m src.models.build_mlb_clv",
+
+    # 11. Build enriched per-pick / per-prop diagnostic detail rows (with subscriber flags).
+    #     Must run after grade_mlb_results (step 8) and build_mlb_clv (step 10).
+    "python -m src.grading.build_mlb_pick_detail",
+    "python -m src.grading.build_mlb_prop_detail",
+
+    # 12. Subscriber track-record aggregates (reads subscriber_qualified rows from detail tables).
+    "python -m src.analytics.build_mlb_subscriber_analytics",
 ]
 
 

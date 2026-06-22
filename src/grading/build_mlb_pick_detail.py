@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from supabase import create_client
 
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from src.grading.subscriber_thresholds import (
+    EDGE_MIN, PROB_MIN, BOTD_EDGE, BOTD_PROB, EDGE_MAX,
+)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -153,8 +156,41 @@ def _parse_pick(market, pick_str, home, away):
     return None, None, None, None
 
 
+def _sub_flags_sharp(edge_flag, model_edge, calibrated_conf):
+    """Return (subscriber_qualified, bet_of_day) for a sharp pick row."""
+    if edge_flag != "REAL":
+        return False, False
+    if model_edge is None or calibrated_conf is None:
+        return False, False
+    edge = float(model_edge)
+    prob = float(calibrated_conf)
+    if not (EDGE_MIN <= edge <= EDGE_MAX and prob >= PROB_MIN):
+        return False, False
+    botd = edge >= BOTD_EDGE and prob >= BOTD_PROB
+    return True, botd
+
+
+def _sub_flags_safe(safe_prob):
+    """Return (subscriber_qualified, bet_of_day) for a safe-zone pick row.
+    Safe-zone picks carry no model edge so they can never be Bet of the Day.
+    """
+    if safe_prob is None:
+        return False, False
+    return float(safe_prob) >= PROB_MIN, False
+
+
 def main():
     grades = supabase.table("mlb_pick_grades").select("*").execute().data
+
+    # Safe-zone probability lookup: (game_id, 'safe_balanced'|'safe_banker') → prob
+    safe_rows = supabase.table("mlb_safe_zone").select(
+        "game_id,balanced_prob,banker_prob"
+    ).execute().data
+    safe_probs: dict[tuple, float | None] = {}
+    for sz in safe_rows:
+        gid = sz["game_id"]
+        safe_probs[(gid, "safe_balanced")] = _num(sz.get("balanced_prob"))
+        safe_probs[(gid, "safe_banker")]   = _num(sz.get("banker_prob"))
 
     games_data = (
         supabase.table("games")
@@ -237,6 +273,14 @@ def main():
         clv        = _num(clv_row.get("clv") if clv_row else None)
         beat_close = (clv_row.get("beat_close") if clv_row else None)
 
+        # Subscriber qualification flags
+        if market in ("safe_balanced", "safe_banker"):
+            sub_qual, botd = _sub_flags_safe(safe_probs.get((gid, market)))
+        else:
+            sub_qual, botd = _sub_flags_sharp(
+                gr.get("edge_flag"), model_edge, calib_conf
+            )
+
         row = {
             "game_id":        gid,
             "game_date":      game_dates.get(gid),
@@ -268,9 +312,11 @@ def main():
             "grade":            gr.get("grade"),
             "units_result":     _num(gr.get("units_result")),
             "roi_percent":      _num(gr.get("roi_percent")),
-            "clv":              clv,
-            "beat_close":       beat_close,
-            "graded_at":        gr.get("graded_at") or now,
+            "clv":                  clv,
+            "beat_close":           beat_close,
+            "subscriber_qualified": sub_qual,
+            "bet_of_day":           botd,
+            "graded_at":            gr.get("graded_at") or now,
         }
 
         supabase.table("mlb_pick_detail").upsert(

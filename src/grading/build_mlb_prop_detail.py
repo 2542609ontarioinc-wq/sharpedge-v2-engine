@@ -13,8 +13,32 @@ from datetime import datetime, timezone
 from supabase import create_client
 
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from src.grading.subscriber_thresholds import (
+    EDGE_MIN, PROB_MIN, BOTD_EDGE, BOTD_PROB,
+)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+
+def _sub_flags_prop(edge_flag, model_edge, calibrated_over_prob, pick_side):
+    """Return (subscriber_qualified, bet_of_day) for a prop row.
+
+    calibrated_over_prob is always the Over-side probability (0–100).
+    pick_side is 'Over' or 'Under' — win_prob is flipped for Unders.
+    """
+    if edge_flag in ("suspect", "no-odds"):
+        return False, False
+    if model_edge is None or calibrated_over_prob is None:
+        return False, False
+    edge = float(model_edge)
+    if edge < EDGE_MIN:
+        return False, False
+    raw_prob = float(calibrated_over_prob)
+    win_prob = (100.0 - raw_prob) if (pick_side or "").lower() == "under" else raw_prob
+    if win_prob < PROB_MIN:
+        return False, False
+    botd = edge >= BOTD_EDGE and win_prob >= BOTD_PROB
+    return True, botd
 
 
 def _num(v, d=None):
@@ -62,25 +86,36 @@ def main():
             else None
         )
 
+        edge_flag_val  = prop.get("edge_flag") or gr.get("edge_flag")
+        calibrated_prob = _num(prop.get("calibrated_over_prob"))
+        model_edge_val  = _num(prop.get("model_edge"))
+        pick_side_val   = gr.get("pick_side")
+
+        sub_qual, botd = _sub_flags_prop(
+            edge_flag_val, model_edge_val, calibrated_prob, pick_side_val
+        )
+
         row = {
-            "game_id":          gid,
-            "game_date":        gr.get("game_date"),
-            "player_name":      gr.get("player_name"),
-            "player_mlb_id":    pid,
-            "player_type":      gr.get("player_type"),
-            "prop_market":      mkt,
-            "market_line":      _num(gr.get("market_line")),
-            "pick_side":        gr.get("pick_side"),
-            "model_projection": model_proj,
-            "calibrated_prob":  _num(prop.get("calibrated_over_prob")),
-            "model_edge":       _num(prop.get("model_edge")),
-            "best_odds_decimal":_num(gr.get("best_odds_decimal")),
-            "edge_flag":        prop.get("edge_flag") or gr.get("edge_flag"),
-            "actual_value":     actual,
-            "prop_bias":        prop_bias,
-            "grade":            gr.get("grade"),
-            "units_result":     _num(gr.get("units_result")),
-            "graded_at":        gr.get("graded_at") or now,
+            "game_id":             gid,
+            "game_date":           gr.get("game_date"),
+            "player_name":         gr.get("player_name"),
+            "player_mlb_id":       pid,
+            "player_type":         gr.get("player_type"),
+            "prop_market":         mkt,
+            "market_line":         _num(gr.get("market_line")),
+            "pick_side":           pick_side_val,
+            "model_projection":    model_proj,
+            "calibrated_prob":     calibrated_prob,
+            "model_edge":          model_edge_val,
+            "best_odds_decimal":   _num(gr.get("best_odds_decimal")),
+            "edge_flag":           edge_flag_val,
+            "actual_value":        actual,
+            "prop_bias":           prop_bias,
+            "grade":               gr.get("grade"),
+            "units_result":        _num(gr.get("units_result")),
+            "subscriber_qualified": sub_qual,
+            "bet_of_day":           botd,
+            "graded_at":           gr.get("graded_at") or now,
         }
 
         supabase.table("mlb_prop_detail").upsert(
