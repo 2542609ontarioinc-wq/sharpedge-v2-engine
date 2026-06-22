@@ -9,13 +9,16 @@ import { TeamLogo } from "./TeamLogo";
 import { LiveScoreModule } from "./LiveScoreModule";
 import type { LiveScore } from "@/hooks/useLiveScores";
 
-// ─── Filter thresholds ──────────────────────────────────────────────────────
+// ─── Filter thresholds (unchanged) ──────────────────────────────────────────
 const EDGE_MIN  = 3;   // min model edge % for picks that carry an edge signal
 const PROB_MIN  = 65;  // min win-probability % for all pick types
-const BOTD_EDGE = 5;   // Bet of the Day: edge >= this
-const BOTD_PROB = 70;  // Bet of the Day: win prob >= this
+const BOTD_EDGE = 5;   // BotD candidate bar: edge >= this
+const BOTD_PROB = 70;  // BotD candidate bar: win prob >= this
 
-// ─── Client-side subscriber segment computation ─────────────────────────────
+// Props cap per game (display only — does not affect qualifying logic)
+const MAX_PROPS_PER_GAME = 2;
+
+// ─── Client-side subscriber segment computation ──────────────────────────────
 const SAFE_MARKETS = new Set(["safe_balanced", "safe_banker"]);
 const GAME_MARKETS = new Set(["moneyline", "totals", "run_line"]);
 
@@ -24,7 +27,6 @@ function isQualified(p: MLBPickDetail): boolean {
   if (GAME_MARKETS.has(p.market)) {
     return (p.modelEdge ?? 0) >= EDGE_MIN && (p.calibratedConf ?? 0) >= PROB_MIN;
   }
-  // Safe-zone picks were probability-gated at generation time
   return SAFE_MARKETS.has(p.market);
 }
 
@@ -57,8 +59,11 @@ function computeSegment(rows: MLBPickDetail[]): MLBSubscriberSegment | null {
   };
 }
 
-// ─── Unified pick shape ─────────────────────────────────────────────────────
+// ─── Unified pick shape ──────────────────────────────────────────────────────
 type PickSource = "sharp" | "balanced" | "banker" | "prop";
+
+// Three-level display hierarchy: one BotD → a few Elite → rest Strong
+type SubPickTier = "Bet of the Day" | "Elite" | "Strong";
 
 type SubPick = {
   key: string;
@@ -67,17 +72,19 @@ type SubPick = {
   homeTeam: string;
   awayTeam: string;
   source: PickSource;
-  label: string;       // "Cardinals ML", "Over 5.5 Strikeouts", …
-  marketLabel: string; // e.g. "Moneyline", "Strikeouts", "Safe Banker"
-  edge: number | null; // null for safe-zone picks (no model edge available)
-  winProb: number;     // probability of the chosen side, 0–100
+  label: string;
+  marketLabel: string;
+  edge: number | null;
+  winProb: number;
+  /** edge × winProb ranking score; 0 for safe-zone picks (no edge). */
+  score: number;
   oddsDecimal: number | null;
   oddsAmerican: number | null;
-  tier: "Bet of the Day" | "Strong";
+  tier: SubPickTier;
   playerName?: string;
 };
 
-// ─── Market display labels ──────────────────────────────────────────────────
+// ─── Market labels ────────────────────────────────────────────────────────────
 const PROP_LABELS: Record<string, string> = {
   strikeouts:    "Strikeouts",
   outs_recorded: "Outs Recorded",
@@ -93,23 +100,53 @@ const GAME_MARKET_LABELS: Record<string, string> = {
   run_line:  "Run Line",
 };
 
-// ─── Tier assignment ────────────────────────────────────────────────────────
-function calcTier(edge: number | null, winProb: number): "Bet of the Day" | "Strong" | null {
-  if (edge !== null && edge >= BOTD_EDGE && winProb >= BOTD_PROB) return "Bet of the Day";
+// ─── Tier helpers ─────────────────────────────────────────────────────────────
+
+// Initial per-pick tier: marks BotD candidates; promotion to exactly one happens later.
+function rawTier(edge: number | null, winProb: number): SubPickTier | null {
   const meetsEdge = edge === null || edge >= EDGE_MIN;
-  if (meetsEdge && winProb >= PROB_MIN) return "Strong";
-  return null;
+  if (!meetsEdge || winProb < PROB_MIN) return null;
+  // BotD candidate — safe-zone (null edge) is never eligible
+  if (edge !== null && edge >= BOTD_EDGE && winProb >= BOTD_PROB) return "Bet of the Day";
+  return "Strong";
 }
 
-// ─── Per-market filter functions ────────────────────────────────────────────
+/**
+ * Across all visible picks, find the single best BotD by edge × winProb.
+ * All other BotD candidates are demoted to "Elite".
+ * Returns the promoted list and the winning key (null if no candidates).
+ */
+function promoteTiers(picks: SubPick[]): { picks: SubPick[]; botdKey: string | null } {
+  const candidates = picks.filter((p) => p.tier === "Bet of the Day");
+  if (candidates.length === 0) return { picks, botdKey: null };
+
+  // Sort candidates: score DESC, then edge DESC, then winProb DESC
+  const sorted = [...candidates].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if ((b.edge ?? 0) !== (a.edge ?? 0)) return (b.edge ?? 0) - (a.edge ?? 0);
+    return b.winProb - a.winProb;
+  });
+
+  const botdKey = sorted[0].key;
+
+  return {
+    botdKey,
+    picks: picks.map((p) =>
+      p.tier === "Bet of the Day" && p.key !== botdKey
+        ? { ...p, tier: "Elite" as SubPickTier }
+        : p
+    ),
+  };
+}
+
+// ─── Per-source filter functions ──────────────────────────────────────────────
 
 function filterSharpPicks(picks: MLBSharpPick[]): SubPick[] {
   return picks.flatMap((p): SubPick[] => {
-    // isRealValue already gates: edge_flag === "REAL" && edge > 0 && edge ≤ 15
     if (!p.isRealValue) return [];
     const edge = p.edge ?? 0;
     const winProb = p.calibratedConfidence ?? 0;
-    const tier = calcTier(edge, winProb);
+    const tier = rawTier(edge, winProb);
     if (!tier) return [];
     return [{
       key: `sharp-${p.gameId}-${p.market}`,
@@ -122,6 +159,7 @@ function filterSharpPicks(picks: MLBSharpPick[]): SubPick[] {
       marketLabel: GAME_MARKET_LABELS[p.market] ?? p.market,
       edge,
       winProb,
+      score: edge * winProb,
       oddsDecimal: p.oddsDecimal,
       oddsAmerican: p.oddsAmerican,
       tier,
@@ -130,14 +168,12 @@ function filterSharpPicks(picks: MLBSharpPick[]): SubPick[] {
 }
 
 function filterSafeZone(picks: MLBSafeZonePick[]): SubPick[] {
-  // Safe-zone picks carry no model edge — only the probability filter applies.
-  // Banker (higher-confidence) before balanced within each game.
   return picks.flatMap((p): SubPick[] => {
     const result: SubPick[] = [];
 
     const bankProb = p.bankerProb ?? 0;
     if (p.bankerPick && bankProb >= PROB_MIN) {
-      const tier = calcTier(null, bankProb);
+      const tier = rawTier(null, bankProb);
       if (tier) result.push({
         key: `banker-${p.gameId}`,
         gameId: p.gameId,
@@ -149,6 +185,7 @@ function filterSafeZone(picks: MLBSafeZonePick[]): SubPick[] {
         marketLabel: "Safe Banker",
         edge: null,
         winProb: bankProb,
+        score: 0, // safe-zone picks cannot be BotD; score used only for group sort
         oddsDecimal: null,
         oddsAmerican: null,
         tier,
@@ -157,7 +194,7 @@ function filterSafeZone(picks: MLBSafeZonePick[]): SubPick[] {
 
     const balProb = p.balancedProb ?? 0;
     if (p.balancedPick && balProb >= PROB_MIN) {
-      const tier = calcTier(null, balProb);
+      const tier = rawTier(null, balProb);
       if (tier) result.push({
         key: `balanced-${p.gameId}`,
         gameId: p.gameId,
@@ -169,6 +206,7 @@ function filterSafeZone(picks: MLBSafeZonePick[]): SubPick[] {
         marketLabel: "Safe Balanced",
         edge: null,
         winProb: balProb,
+        score: 0,
         oddsDecimal: null,
         oddsAmerican: null,
         tier,
@@ -184,10 +222,9 @@ function filterProps(props: MLBPlayerProp[]): SubPick[] {
     if (p.edgeFlag === "suspect" || p.edgeFlag === "no-odds") return [];
     const edge = p.modelEdge ?? 0;
     if (edge < EDGE_MIN) return [];
-    // Win prob = probability of the chosen side (calibratedOverProb is always the Over prob)
     const rawProb = p.calibratedOverProb ?? 50;
     const winProb = p.pickSide === "Under" ? 100 - rawProb : rawProb;
-    const tier = calcTier(edge, winProb);
+    const tier = rawTier(edge, winProb);
     if (!tier) return [];
     const mktLabel = PROP_LABELS[p.propMarket] ?? p.propMarket;
     return [{
@@ -201,6 +238,7 @@ function filterProps(props: MLBPlayerProp[]): SubPick[] {
       marketLabel: mktLabel,
       edge,
       winProb,
+      score: edge * winProb,
       oddsDecimal: p.bestOddsDecimal,
       oddsAmerican: p.bestOddsAmerican,
       tier,
@@ -209,7 +247,7 @@ function filterProps(props: MLBPlayerProp[]): SubPick[] {
   });
 }
 
-// ─── Game grouping ──────────────────────────────────────────────────────────
+// ─── Game grouping (with prop cap) ───────────────────────────────────────────
 type GameGroup = {
   gameId: string;
   homeTeam: string;
@@ -223,6 +261,16 @@ function gameDateToronto(gameTime: string | null): string | null {
   const d = new Date(gameTime);
   if (Number.isNaN(d.getTime())) return null;
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto" }).format(d);
+}
+
+const TIER_ORDER: Record<SubPickTier, number> = { "Bet of the Day": 0, "Elite": 1, "Strong": 2 };
+
+function pickSorter(a: SubPick, b: SubPick): number {
+  const to = TIER_ORDER[a.tier] - TIER_ORDER[b.tier];
+  if (to !== 0) return to;
+  if (b.score !== a.score) return b.score - a.score;
+  if ((b.edge ?? 0) !== (a.edge ?? 0)) return (b.edge ?? 0) - (a.edge ?? 0);
+  return b.winProb - a.winProb;
 }
 
 function buildGroups(picks: SubPick[]): GameGroup[] {
@@ -239,22 +287,23 @@ function buildGroups(picks: SubPick[]): GameGroup[] {
     }
     map.get(p.gameId)!.picks.push(p);
   }
-  // Within each game: BotD first, then by edge desc, then by winProb desc
+
   for (const g of map.values()) {
-    g.picks.sort((a, b) => {
-      if (a.tier === "Bet of the Day" && b.tier !== "Bet of the Day") return -1;
-      if (b.tier === "Bet of the Day" && a.tier !== "Bet of the Day") return 1;
-      if ((b.edge ?? 0) !== (a.edge ?? 0)) return (b.edge ?? 0) - (a.edge ?? 0);
-      return b.winProb - a.winProb;
-    });
+    const nonProps = g.picks.filter((p) => p.source !== "prop");
+    // Cap props at MAX_PROPS_PER_GAME, ranked by score then edge then prob
+    const props = g.picks
+      .filter((p) => p.source === "prop")
+      .sort(pickSorter)
+      .slice(0, MAX_PROPS_PER_GAME);
+    g.picks = [...nonProps, ...props].sort(pickSorter);
   }
-  // Sort games by start time
+
   return [...map.values()].sort((a, b) =>
     (a.gameTime ?? "").localeCompare(b.gameTime ?? "")
   );
 }
 
-// ─── Source badge styles ────────────────────────────────────────────────────
+// ─── Source badge styles ──────────────────────────────────────────────────────
 const SOURCE_STYLE: Record<PickSource, string> = {
   sharp:    "border-accent-2/40 bg-accent-2/10 text-accent-2",
   balanced: "border-elite/40   bg-elite/10    text-elite",
@@ -269,29 +318,120 @@ const SOURCE_LABEL: Record<PickSource, string> = {
   prop:     "Prop",
 };
 
-// ─── Pick row ───────────────────────────────────────────────────────────────
+// ─── Odds formatter ───────────────────────────────────────────────────────────
+function fmtOdds(american: number | null, decimal: number | null): string | null {
+  if (american != null) return `${american > 0 ? "+" : ""}${american}`;
+  if (decimal != null)  return `×${decimal.toFixed(2)}`;
+  return null;
+}
+
+// ─── Bet of the Day featured card ─────────────────────────────────────────────
+function BetOfTheDayCard({
+  pick,
+  liveState,
+}: {
+  pick: SubPick;
+  liveState?: Map<string, LiveScore>;
+}) {
+  const live = liveState?.get(pick.gameId);
+  const isLive = live?.isLive ?? false;
+  const oddsStr = fmtOdds(pick.oddsAmerican, pick.oddsDecimal);
+
+  return (
+    <div className="rounded-2xl border-2 border-watch/55 bg-watch/8 p-5 shadow-lg shadow-watch/10">
+      {/* Header */}
+      <div className="mb-4 flex items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-watch/50 bg-watch/20 px-3 py-1 text-xs font-bold text-watch">
+          ★ BET OF THE DAY
+        </span>
+        <span className="text-[10px] text-muted/50">single highest-conviction play</span>
+      </div>
+
+      {/* Matchup */}
+      <div className="mb-1 flex items-center gap-1.5 flex-wrap">
+        <TeamLogo team={pick.awayTeam} size={20} />
+        <span className="text-sm font-semibold text-ink">{pick.awayTeam}</span>
+        <span className="text-muted text-xs">@</span>
+        <TeamLogo team={pick.homeTeam} size={20} />
+        <span className="text-sm font-semibold text-ink">{pick.homeTeam}</span>
+        {isLive && (
+          <span className="ml-1 flex items-center gap-1">
+            <span className="size-1.5 rounded-full bg-watch animate-pulse" />
+            <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
+          </span>
+        )}
+      </div>
+      <p className="mb-4 text-xs text-muted">{formatFirstPitch(pick.gameTime)}</p>
+
+      {/* The pick */}
+      <div className="rounded-xl border border-watch/30 bg-bg-2/60 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-watch/70">
+              {pick.marketLabel}
+            </p>
+            <p className="mt-0.5 text-xl font-bold text-ink">{pick.label}</p>
+            {pick.playerName && (
+              <p className="mt-0.5 text-xs text-muted">{pick.playerName}</p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-4 text-right">
+            {pick.edge !== null && (
+              <div>
+                <p className="text-[10px] text-muted/50">Edge</p>
+                <p className="text-sm font-bold text-elite">+{pick.edge.toFixed(1)}%</p>
+              </div>
+            )}
+            <div>
+              <p className="text-[10px] text-muted/50">Win%</p>
+              <p className="text-sm font-bold text-watch">{pick.winProb.toFixed(1)}%</p>
+            </div>
+            {oddsStr && (
+              <div>
+                <p className="text-[10px] text-muted/50">Odds</p>
+                <p className="text-sm font-mono text-muted">{oddsStr}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Live score */}
+      {live && (
+        <LiveScoreModule
+          live={live}
+          market={pick.source === "prop" ? "totals" : pick.marketLabel.toLowerCase()}
+          pick={pick.label}
+          homeTeam={pick.homeTeam}
+          awayTeam={pick.awayTeam}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Pick row ─────────────────────────────────────────────────────────────────
 function PickRow({ pick }: { pick: SubPick }) {
-  const isBotD = pick.tier === "Bet of the Day";
-  const amOdds = pick.oddsAmerican;
-  const oddsStr =
-    amOdds != null
-      ? `${amOdds > 0 ? "+" : ""}${amOdds}`
-      : pick.oddsDecimal != null
-      ? `×${pick.oddsDecimal.toFixed(2)}`
-      : null;
+  const isBotD  = pick.tier === "Bet of the Day";
+  const isElite = pick.tier === "Elite";
+  const oddsStr = fmtOdds(pick.oddsAmerican, pick.oddsDecimal);
 
   return (
     <div
       className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl px-3 py-2.5 ${
-        isBotD
-          ? "bg-watch/5 ring-1 ring-watch/25"
-          : "bg-white/[0.02] ring-1 ring-border/30"
+        isBotD  ? "bg-watch/5 ring-1 ring-watch/25"
+        : isElite ? "bg-violet-500/5 ring-1 ring-violet-500/20"
+        : "bg-white/[0.02] ring-1 ring-border/30"
       }`}
     >
       {/* Tier badge */}
       {isBotD ? (
         <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-watch/50 bg-watch/20 px-2 py-0.5 text-[10px] font-bold tracking-wide text-watch">
           ★ BET OF THE DAY
+        </span>
+      ) : isElite ? (
+        <span className="shrink-0 inline-flex items-center rounded-full border border-violet-400/50 bg-violet-500/15 px-2 py-0.5 text-[10px] font-bold text-violet-300">
+          Elite
         </span>
       ) : (
         <span className="shrink-0 inline-flex items-center rounded-full border border-elite/40 bg-elite/10 px-2 py-0.5 text-[10px] font-semibold text-elite">
@@ -300,9 +440,7 @@ function PickRow({ pick }: { pick: SubPick }) {
       )}
 
       {/* Source badge */}
-      <span
-        className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${SOURCE_STYLE[pick.source]}`}
-      >
+      <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${SOURCE_STYLE[pick.source]}`}>
         {SOURCE_LABEL[pick.source]}
       </span>
 
@@ -325,7 +463,7 @@ function PickRow({ pick }: { pick: SubPick }) {
         )}
         <div>
           <p className="text-[10px] text-muted/50">Win%</p>
-          <p className={`text-xs font-bold ${isBotD ? "text-watch" : "text-ink"}`}>
+          <p className={`text-xs font-bold ${isBotD ? "text-watch" : isElite ? "text-violet-300" : "text-ink"}`}>
             {pick.winProb.toFixed(1)}%
           </p>
         </div>
@@ -340,21 +478,30 @@ function PickRow({ pick }: { pick: SubPick }) {
   );
 }
 
-// ─── Game card ──────────────────────────────────────────────────────────────
-function GameCard({ group, liveState }: { group: GameGroup; liveState?: Map<string, LiveScore> }) {
-  const hasBotD = group.picks.some((p) => p.tier === "Bet of the Day");
-  const live = liveState?.get(group.gameId);
-  const isLive = live?.isLive ?? false;
+// ─── Game card ────────────────────────────────────────────────────────────────
+function GameCard({
+  group,
+  liveState,
+}: {
+  group: GameGroup;
+  liveState?: Map<string, LiveScore>;
+}) {
+  const hasBotD  = group.picks.some((p) => p.tier === "Bet of the Day");
+  const hasElite = !hasBotD && group.picks.some((p) => p.tier === "Elite");
+  const live    = liveState?.get(group.gameId);
+  const isLive  = live?.isLive ?? false;
   const topPick = group.picks[0];
+
+  const borderClass = hasBotD
+    ? "border-watch/35"
+    : hasElite
+    ? "border-violet-400/30"
+    : "border-border";
+
   return (
-    <div
-      className={`rounded-2xl border bg-surface p-4 backdrop-blur ${
-        hasBotD ? "border-watch/35" : "border-border"
-      }`}
-    >
+    <div className={`rounded-2xl border bg-surface p-4 backdrop-blur ${borderClass}`}>
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          {/* Team row with logos */}
           <div className="flex items-center gap-1.5 flex-wrap">
             <TeamLogo team={group.awayTeam} size={18} />
             <span className="text-sm font-semibold text-ink">{group.awayTeam}</span>
@@ -394,9 +541,9 @@ function GameCard({ group, liveState }: { group: GameGroup; liveState?: Map<stri
   );
 }
 
-// ─── Subscriber track record ────────────────────────────────────────────────
+// ─── Subscriber track record ─────────────────────────────────────────────────
 
-const MIN_SAMPLE = 30; // show data-quality warning below this N
+const MIN_SAMPLE = 30;
 
 function StatCell({ label, value }: { label: string; value: string }) {
   return (
@@ -407,13 +554,7 @@ function StatCell({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SegmentStats({
-  label,
-  seg,
-}: {
-  label: string;
-  seg: MLBSubscriberSegment | null;
-}) {
+function SegmentStats({ label, seg }: { label: string; seg: MLBSubscriberSegment | null }) {
   if (!seg || seg.pickCount === 0) {
     return (
       <div className="flex-1 rounded-xl border border-border/40 bg-bg-2/50 px-4 py-3 text-center">
@@ -422,13 +563,13 @@ function SegmentStats({
       </div>
     );
   }
-  const n      = seg.pickCount;
-  const wl     = `${seg.winCount}-${seg.lossCount}`;
-  const wr     = seg.winRate != null ? `${(seg.winRate * 100).toFixed(1)}%` : "—";
-  const roi    = seg.roiPercent != null ? `${seg.roiPercent > 0 ? "+" : ""}${seg.roiPercent.toFixed(1)}%` : "—";
-  const edge   = seg.avgEdge   != null ? `+${seg.avgEdge.toFixed(1)}%` : "—";
-  const prob   = seg.avgWinProb != null ? `${seg.avgWinProb.toFixed(1)}%` : "—";
-  const clv    = seg.avgClv    != null ? `${seg.avgClv > 0 ? "+" : ""}${seg.avgClv.toFixed(2)}%` : "(no data)";
+  const n   = seg.pickCount;
+  const wl  = `${seg.winCount}-${seg.lossCount}`;
+  const wr  = seg.winRate   != null ? `${(seg.winRate * 100).toFixed(1)}%` : "—";
+  const roi = seg.roiPercent != null ? `${seg.roiPercent > 0 ? "+" : ""}${seg.roiPercent.toFixed(1)}%` : "—";
+  const edge = seg.avgEdge   != null ? `+${seg.avgEdge.toFixed(1)}%` : "—";
+  const prob = seg.avgWinProb != null ? `${seg.avgWinProb.toFixed(1)}%` : "—";
+  const clv  = seg.avgClv    != null ? `${seg.avgClv > 0 ? "+" : ""}${seg.avgClv.toFixed(2)}%` : "(no data)";
 
   return (
     <div className="flex-1 rounded-xl border border-border/40 bg-bg-2/50 px-4 py-3">
@@ -450,15 +591,10 @@ function SegmentStats({
   );
 }
 
-function SubscriberTrackRecord({
-  gradedPicks,
-}: {
-  gradedPicks: MLBPickDetail[];
-}) {
+function SubscriberTrackRecord({ gradedPicks }: { gradedPicks: MLBPickDetail[] }) {
   const [trDateFilter, setTrDateFilter] = useState("all");
 
-  // Unique game dates from graded qualifying picks, newest-first
-  const qualifiedAll = gradedPicks.filter(isQualified);
+  const qualifiedAll  = gradedPicks.filter(isQualified);
   const qualifiedBotD = gradedPicks.filter(isBotD);
 
   const trDates = [...new Set(
@@ -472,7 +608,7 @@ function SubscriberTrackRecord({
     return rows.filter((p) => p.gameDate === trDateFilter);
   }
 
-  const segAll = computeSegment(applyTrFilter(qualifiedAll));
+  const segAll  = computeSegment(applyTrFilter(qualifiedAll));
   const segBotD = computeSegment(applyTrFilter(qualifiedBotD));
 
   return (
@@ -491,22 +627,17 @@ function SubscriberTrackRecord({
         Win% and ROI are secondary — favourites bias applies.
       </p>
 
-      <DateSelector
-        dates={trDates}
-        selected={trDateFilter}
-        onChange={setTrDateFilter}
-        showLast7
-      />
+      <DateSelector dates={trDates} selected={trDateFilter} onChange={setTrDateFilter} showLast7 />
 
       <div className="flex flex-col gap-3 sm:flex-row">
         <SegmentStats label="All Qualifying Plays" seg={segAll} />
-        <SegmentStats label="★ Bet of the Day" seg={segBotD} />
+        <SegmentStats label="★ BotD-quality plays" seg={segBotD} />
       </div>
     </div>
   );
 }
 
-// ─── Main export ────────────────────────────────────────────────────────────
+// ─── Main export ─────────────────────────────────────────────────────────────
 export function MLBSubscriberView({
   sharpPicks,
   safeZone,
@@ -522,27 +653,32 @@ export function MLBSubscriberView({
 }) {
   const [dateFilter, setDateFilter] = useState("all");
 
-  const allPicks: SubPick[] = [
+  const rawPicks: SubPick[] = [
     ...filterSharpPicks(sharpPicks),
     ...filterSafeZone(safeZone),
     ...filterProps(playerProps),
   ];
 
   const dates = [...new Set(
-    allPicks.map((p) => gameDateToronto(p.gameTime)).filter(Boolean) as string[]
+    rawPicks.map((p) => gameDateToronto(p.gameTime)).filter(Boolean) as string[]
   )].sort();
 
-  const visiblePicks =
+  const filteredRaw =
     dateFilter === "all"
-      ? allPicks
-      : allPicks.filter((p) => gameDateToronto(p.gameTime) === dateFilter);
+      ? rawPicks
+      : rawPicks.filter((p) => gameDateToronto(p.gameTime) === dateFilter);
+
+  // Promote exactly one BotD across the current date's visible picks
+  const { picks: visiblePicks, botdKey } = promoteTiers(filteredRaw);
+
+  const botdPick = botdKey ? visiblePicks.find((p) => p.key === botdKey) ?? null : null;
+  const eliteCount = visiblePicks.filter((p) => p.tier === "Elite").length;
 
   const groups = buildGroups(visiblePicks);
-  const botdCount = visiblePicks.filter((p) => p.tier === "Bet of the Day").length;
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Honesty guardrail — always visible; review before making tab public */}
+      {/* Honesty guardrail */}
       <div className="rounded-xl border border-watch/30 bg-watch/5 px-4 py-3 text-xs leading-relaxed text-muted">
         <span className="font-bold text-watch">INTERNAL — Do not share or bet real money.</span>{" "}
         This is a paper-trading view only. The Poisson model is unproven and still accumulating
@@ -556,23 +692,33 @@ export function MLBSubscriberView({
         Edge ≥ +{EDGE_MIN}% (where applicable) · Win prob ≥ {PROB_MIN}% · No suspect / no-odds flags
         <span className="mx-2 text-border-strong">·</span>
         <span className="font-semibold text-watch">★ Bet of the Day</span>{" "}
-        = edge ≥ +{BOTD_EDGE}% &amp; prob ≥ {BOTD_PROB}%
+        = single best play by edge × prob (edge ≥ +{BOTD_EDGE}% &amp; prob ≥ {BOTD_PROB}% required)
+        <span className="mx-2 text-border-strong">·</span>
+        <span className="font-semibold text-violet-300">Elite</span>{" "}
+        = BotD-bar met but not selected · Props capped at {MAX_PROPS_PER_GAME} per game
       </div>
 
       {/* Date selector */}
       <DateSelector dates={dates} selected={dateFilter} onChange={setDateFilter} />
 
-      {/* Bet of the Day summary pill */}
-      {botdCount > 0 && (
-        <div className="flex items-center gap-2">
-          <span className="rounded-full border border-watch/50 bg-watch/15 px-3 py-1 text-xs font-bold text-watch">
-            ★ {botdCount} Bet{botdCount !== 1 ? "s" : ""} of the Day
-          </span>
-          <span className="text-xs text-muted/50">highest-conviction plays this slate</span>
+      {/* ★ Bet of the Day — dedicated featured section */}
+      {botdPick && (
+        <div>
+          <BetOfTheDayCard pick={botdPick} liveState={liveState} />
         </div>
       )}
 
-      {/* Game groups */}
+      {/* Elite count pill */}
+      {eliteCount > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-violet-400/50 bg-violet-500/15 px-3 py-1 text-xs font-bold text-violet-300">
+            {eliteCount} Elite play{eliteCount !== 1 ? "s" : ""}
+          </span>
+          <span className="text-xs text-muted/50">meets BotD bar, not today's top pick</span>
+        </div>
+      )}
+
+      {/* Game list */}
       {groups.length === 0 ? (
         <EmptyState
           title="No qualifying plays"
@@ -594,10 +740,11 @@ export function MLBSubscriberView({
         <p className="text-right text-[10px] text-muted/40">
           {visiblePicks.length} qualifying play{visiblePicks.length !== 1 ? "s" : ""} across{" "}
           {groups.length} game{groups.length !== 1 ? "s" : ""}
+          {" · "}{MAX_PROPS_PER_GAME} props/game max
         </p>
       )}
 
-      {/* Track record — always shown regardless of today's picks date filter */}
+      {/* Track record */}
       <SubscriberTrackRecord gradedPicks={gradedPicks} />
     </div>
   );
