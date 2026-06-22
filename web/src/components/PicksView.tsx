@@ -358,6 +358,7 @@ export function PicksView({
           safeZone={mlbSafeZone}
           playerProps={mlbPlayerProps}
           liveState={liveState}
+          gradedPicks={mlbDiagnostics.picks}
         />
       ) : tab === "lab" ? (
         <MLBModelLabView games={mlbModelLab} analytics={mlbModelAnalytics} />

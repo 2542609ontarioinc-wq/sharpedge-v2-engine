@@ -802,10 +802,17 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
     ...props.map((p) => p.gameDate),
   ].filter(Boolean) as string[])].sort().reverse();
 
-  const filteredPicks =
-    dateFilter === "all" ? picks : picks.filter((p) => p.gameDate === dateFilter);
-  const filteredProps =
-    dateFilter === "all" ? props : props.filter((p) => p.gameDate === dateFilter);
+  // "last7" = the 7 most-recent distinct game dates in the data
+  const last7Set = new Set(diagDates.slice(0, 7));
+
+  function applyDateFilter<T extends { gameDate: string | null }>(items: T[]): T[] {
+    if (dateFilter === "all") return items;
+    if (dateFilter === "last7") return items.filter((p) => last7Set.has(p.gameDate ?? ""));
+    return items.filter((p) => p.gameDate === dateFilter);
+  }
+
+  const filteredPicks = applyDateFilter(picks);
+  const filteredProps = applyDateFilter(props);
 
   const N = gradedOnly(filteredPicks).length;
   const Nprop = filteredProps.filter((p) => p.grade === "WIN" || p.grade === "LOSS").length;
@@ -845,7 +852,7 @@ export function MLBDiagnosticsView({ data }: { data: MLBDiagnostics }) {
       </div>
 
       {/* Date filter */}
-      <DateSelector dates={diagDates} selected={dateFilter} onChange={setDateFilter} />
+      <DateSelector dates={diagDates} selected={dateFilter} onChange={setDateFilter} showLast7 />
 
       {/* Sample-size banners */}
       <div className="space-y-2">

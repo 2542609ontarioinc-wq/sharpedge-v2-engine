@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBSubscriberResults, MLBSubscriberSegment } from "@/lib/types";
-import { getMLBSubscriberResults } from "@/lib/data";
+import { useState } from "react";
+import type { MLBPickDetail, MLBPlayerProp, MLBSafeZonePick, MLBSharpPick, MLBSubscriberSegment } from "@/lib/types";
 import { DateSelector } from "./DateSelector";
 import { formatFirstPitch } from "@/lib/format";
 import { EmptyState } from "./EmptyState";
@@ -15,6 +14,48 @@ const EDGE_MIN  = 3;   // min model edge % for picks that carry an edge signal
 const PROB_MIN  = 65;  // min win-probability % for all pick types
 const BOTD_EDGE = 5;   // Bet of the Day: edge >= this
 const BOTD_PROB = 70;  // Bet of the Day: win prob >= this
+
+// ─── Client-side subscriber segment computation ─────────────────────────────
+const SAFE_MARKETS = new Set(["safe_balanced", "safe_banker"]);
+const GAME_MARKETS = new Set(["moneyline", "totals", "run_line"]);
+
+function isQualified(p: MLBPickDetail): boolean {
+  if (p.edgeFlag !== "REAL") return false;
+  if (GAME_MARKETS.has(p.market)) {
+    return (p.modelEdge ?? 0) >= EDGE_MIN && (p.calibratedConf ?? 0) >= PROB_MIN;
+  }
+  // Safe-zone picks were probability-gated at generation time
+  return SAFE_MARKETS.has(p.market);
+}
+
+function isBotD(p: MLBPickDetail): boolean {
+  if (!isQualified(p)) return false;
+  return GAME_MARKETS.has(p.market) &&
+    (p.modelEdge ?? 0) >= BOTD_EDGE &&
+    (p.calibratedConf ?? 0) >= BOTD_PROB;
+}
+
+function computeSegment(rows: MLBPickDetail[]): MLBSubscriberSegment | null {
+  const graded = rows.filter((p) => p.grade === "WIN" || p.grade === "LOSS");
+  if (graded.length === 0) return null;
+  const wins = graded.filter((p) => p.grade === "WIN").length;
+  const clvRows = graded.filter((p) => p.clv !== null);
+  const unitsProfit = graded.reduce((s, p) => s + (p.unitsResult ?? 0), 0);
+  const edgeRows = graded.filter((p) => p.modelEdge !== null);
+  const confRows = graded.filter((p) => p.calibratedConf !== null);
+  return {
+    pickCount: graded.length,
+    winCount: wins,
+    lossCount: graded.length - wins,
+    winRate: wins / graded.length,
+    unitsProfit,
+    roiPercent: (unitsProfit / graded.length) * 100,
+    avgEdge: edgeRows.length > 0 ? edgeRows.reduce((s, p) => s + (p.modelEdge ?? 0), 0) / edgeRows.length : null,
+    avgWinProb: confRows.length > 0 ? confRows.reduce((s, p) => s + (p.calibratedConf ?? 0), 0) / confRows.length : null,
+    avgClv: clvRows.length > 0 ? clvRows.reduce((s, p) => s + (p.clv ?? 0), 0) / clvRows.length : null,
+    clvBeatRate: clvRows.length > 0 ? clvRows.filter((p) => p.beatClose).length / clvRows.length : null,
+  };
+}
 
 // ─── Unified pick shape ─────────────────────────────────────────────────────
 type PickSource = "sharp" | "balanced" | "banker" | "prop";
@@ -409,8 +450,30 @@ function SegmentStats({
   );
 }
 
-function SubscriberTrackRecord({ results }: { results: MLBSubscriberResults | null }) {
-  if (!results) return null;
+function SubscriberTrackRecord({
+  gradedPicks,
+}: {
+  gradedPicks: MLBPickDetail[];
+}) {
+  const [trDateFilter, setTrDateFilter] = useState("all");
+
+  // Unique game dates from graded qualifying picks, newest-first
+  const qualifiedAll = gradedPicks.filter(isQualified);
+  const qualifiedBotD = gradedPicks.filter(isBotD);
+
+  const trDates = [...new Set(
+    qualifiedAll.map((p) => p.gameDate).filter(Boolean) as string[]
+  )].sort().reverse();
+  const last7Set = new Set(trDates.slice(0, 7));
+
+  function applyTrFilter(rows: MLBPickDetail[]): MLBPickDetail[] {
+    if (trDateFilter === "all") return rows;
+    if (trDateFilter === "last7") return rows.filter((p) => last7Set.has(p.gameDate ?? ""));
+    return rows.filter((p) => p.gameDate === trDateFilter);
+  }
+
+  const segAll = computeSegment(applyTrFilter(qualifiedAll));
+  const segBotD = computeSegment(applyTrFilter(qualifiedBotD));
 
   return (
     <div className="mt-2 rounded-2xl border border-border bg-surface p-4">
@@ -428,9 +491,16 @@ function SubscriberTrackRecord({ results }: { results: MLBSubscriberResults | nu
         Win% and ROI are secondary — favourites bias applies.
       </p>
 
+      <DateSelector
+        dates={trDates}
+        selected={trDateFilter}
+        onChange={setTrDateFilter}
+        showLast7
+      />
+
       <div className="flex flex-col gap-3 sm:flex-row">
-        <SegmentStats label="All Qualifying Plays" seg={results.all} />
-        <SegmentStats label="★ Bet of the Day" seg={results.betOfDay} />
+        <SegmentStats label="All Qualifying Plays" seg={segAll} />
+        <SegmentStats label="★ Bet of the Day" seg={segBotD} />
       </div>
     </div>
   );
@@ -442,18 +512,15 @@ export function MLBSubscriberView({
   safeZone,
   playerProps,
   liveState,
+  gradedPicks = [],
 }: {
   sharpPicks: MLBSharpPick[];
   safeZone: MLBSafeZonePick[];
   playerProps: MLBPlayerProp[];
   liveState?: Map<string, LiveScore>;
+  gradedPicks?: MLBPickDetail[];
 }) {
   const [dateFilter, setDateFilter] = useState("all");
-  const [trackRecord, setTrackRecord] = useState<MLBSubscriberResults | null>(null);
-
-  useEffect(() => {
-    getMLBSubscriberResults().then(setTrackRecord).catch(() => setTrackRecord(null));
-  }, []);
 
   const allPicks: SubPick[] = [
     ...filterSharpPicks(sharpPicks),
@@ -530,8 +597,8 @@ export function MLBSubscriberView({
         </p>
       )}
 
-      {/* Track record — always shown regardless of date filter */}
-      <SubscriberTrackRecord results={trackRecord} />
+      {/* Track record — always shown regardless of today's picks date filter */}
+      <SubscriberTrackRecord gradedPicks={gradedPicks} />
     </div>
   );
 }
