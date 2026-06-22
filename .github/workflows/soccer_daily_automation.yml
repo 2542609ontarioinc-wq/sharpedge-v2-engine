@@ -2,8 +2,9 @@ name: SharpEdge Soccer Daily Automation
 
 on:
   schedule:
-    # 2:00 AM Toronto during daylight time = 6:00 AM UTC
-    - cron: "0 6 * * *"
+    # 6:00 AM Toronto during daylight time = 10:00 AM UTC
+    # (Shifted from 6 AM UTC which was consistently 6-10 hours late due to GitHub queue load)
+    - cron: "0 10 * * *"
   workflow_dispatch:
 
 jobs:

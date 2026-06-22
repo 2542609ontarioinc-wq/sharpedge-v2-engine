@@ -1,4 +1,5 @@
 import requests
+from datetime import datetime, timezone
 from supabase import create_client
 
 from src.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY, ODDS_API_KEY
@@ -42,6 +43,12 @@ def main():
         return
 
     data = response.json()
+
+    # Delete today's odds before inserting so reruns don't accumulate duplicates.
+    # Rows older than today are historical captures and are intentionally preserved.
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    supabase.table("soccer_odds").delete().gte("captured_at", today_utc).execute()
+    print(f"Cleared today's existing odds rows before fresh capture")
 
     saved = 0
 
