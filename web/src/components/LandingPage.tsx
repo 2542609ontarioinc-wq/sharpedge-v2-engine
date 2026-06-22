@@ -2,7 +2,8 @@
 
 import { useState, useCallback } from "react";
 import { mlbLogoUrl } from "@/lib/mlb-teams";
-import type { FeaturedPick } from "@/app/landing/page";
+import { LandingAdminPreview } from "./LandingAdminPreview";
+import type { AdminPreviewData, FeaturedPick } from "@/app/landing/page";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -18,14 +19,16 @@ function formatGameTime(iso: string | null): string {
   if (!iso) return "Game time TBD";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "Game time TBD";
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Toronto",
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(d) + " ET";
+  return (
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Toronto",
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(d) + " ET"
+  );
 }
 
 // ─── Coming-Soon Modal ────────────────────────────────────────────────────────
@@ -60,13 +63,18 @@ function ComingSoonModal({ onClose }: { onClose: () => void }) {
 
 // ─── Internal Preview Ribbon ─────────────────────────────────────────────────
 
-function InternalBanner() {
+function InternalBanner({ adminMode }: { adminMode: boolean }) {
   return (
     <div className="sticky top-0 z-40 bg-watch/20 border-b border-watch/40 px-4 py-2 text-center">
       <p className="text-xs font-semibold text-watch">
         INTERNAL PREVIEW — Flip{" "}
         <code className="font-mono text-ink/80">LANDING_PAGE_ENABLED = true</code>{" "}
         in <code className="font-mono text-ink/80">app/landing/page.tsx</code> to go live
+        {adminMode && (
+          <span className="ml-3 text-watch/70">
+            · Admin preview active (<code className="font-mono text-ink/70">?admin=1</code>)
+          </span>
+        )}
       </p>
     </div>
   );
@@ -118,7 +126,6 @@ function LandingHero({ onComingSoon }: { onComingSoon: () => void }) {
 
   return (
     <section className="relative overflow-hidden px-4 py-24 sm:py-32 text-center">
-      {/* Background glow */}
       <div className="pointer-events-none absolute inset-0 flex items-start justify-center">
         <div className="h-96 w-96 rounded-full bg-reject/8 blur-3xl" />
       </div>
@@ -191,9 +198,7 @@ function LandingAbout() {
   return (
     <section className="px-4 py-20 sm:px-6">
       <div className="mx-auto max-w-3xl">
-        <h2 className="mb-4 text-2xl font-bold text-ink sm:text-3xl">
-          Who we are
-        </h2>
+        <h2 className="mb-4 text-2xl font-bold text-ink sm:text-3xl">Who we are</h2>
         <div className="space-y-4 text-muted leading-relaxed">
           <p>
             SharpEdge is an independent analytics project — not a sportsbook,
@@ -203,18 +208,15 @@ function LandingAbout() {
           </p>
           <p>
             Our philosophy is{" "}
-            <span className="font-semibold text-ink">
-              70% market, 30% model
-            </span>
-            : closing-line value (CLV) is the most honest measure of pick
-            quality. A pick that beats the close is good; a pick that doesn&rsquo;t
-            isn&rsquo;t, regardless of the outcome.
+            <span className="font-semibold text-ink">70% market, 30% model</span>: closing-line
+            value (CLV) is the most honest measure of pick quality. A pick that beats the close is
+            good; a pick that doesn&rsquo;t isn&rsquo;t, regardless of the outcome.
           </p>
           <p>
             We publish wins and losses. Our models are unproven in real money —
             all historical results are{" "}
-            <span className="font-semibold text-watch">paper only</span>. We
-            will not claim an edge we haven&rsquo;t earned.
+            <span className="font-semibold text-watch">paper only</span>. We will not claim an
+            edge we haven&rsquo;t earned.
           </p>
         </div>
       </div>
@@ -253,6 +255,8 @@ function TeamLogoOrInitial({ team, size = 36 }: { team: string; size?: number })
 }
 
 function LandingFreePick({ pick }: { pick: FeaturedPick | null }) {
+  const isFuture = Boolean(pick?.dateLabel);
+
   return (
     <section id="free-pick" className="scroll-mt-20 px-4 py-20 sm:px-6">
       <div className="mx-auto max-w-2xl">
@@ -262,13 +266,20 @@ function LandingFreePick({ pick }: { pick: FeaturedPick | null }) {
             <span className="relative inline-flex h-2 w-2 rounded-full bg-elite" />
           </span>
           <span className="text-xs font-semibold uppercase tracking-widest text-elite">
-            Today&rsquo;s free pick
+            {pick?.dateLabel ?? "Today's free pick"}
           </span>
         </div>
 
         <h2 className="mb-6 text-2xl font-bold text-ink sm:text-3xl">
-          Free public pick
+          {isFuture ? "Upcoming free pick" : "Free public pick"}
         </h2>
+
+        {isFuture && (
+          <p className="mb-4 rounded border border-border bg-surface/60 px-3 py-2 text-xs text-muted/70">
+            No qualifying pick available for today yet. Showing the next upcoming pick — check back
+            closer to game time for today&rsquo;s slate.
+          </p>
+        )}
 
         {pick ? (
           <div className="rounded-2xl border-2 border-elite/40 bg-elite/5 p-6 shadow-lg shadow-elite/5">
@@ -294,9 +305,7 @@ function LandingFreePick({ pick }: { pick: FeaturedPick | null }) {
               {pick.confidence !== null && (
                 <p className="mt-1 text-sm text-muted">
                   Model confidence:{" "}
-                  <span className="font-semibold text-ink">
-                    {pick.confidence.toFixed(1)}%
-                  </span>
+                  <span className="font-semibold text-ink">{pick.confidence.toFixed(1)}%</span>
                 </p>
               )}
               <p className="mt-1 text-xs text-muted">{formatGameTime(pick.gameTime)}</p>
@@ -304,8 +313,7 @@ function LandingFreePick({ pick }: { pick: FeaturedPick | null }) {
 
             {/* Responsible gambling */}
             <p className="text-xs text-muted/70 leading-relaxed">
-              Unproven model · paper only · 19+ · gamble responsibly ·
-              ConnexOntario{" "}
+              Unproven model · paper only · 19+ · gamble responsibly · ConnexOntario{" "}
               <span className="font-medium text-muted">1-866-531-2600</span>
             </p>
           </div>
@@ -385,7 +393,8 @@ function LandingPricing({ onComingSoon }: { onComingSoon: () => void }) {
           <h2 className="mb-3 text-2xl font-bold text-ink sm:text-3xl">Simple, honest pricing</h2>
           <p className="text-muted">
             Prices finalized before launch.{" "}
-            <span className="text-watch font-medium">$— placeholders</span> — we&rsquo;ll fill these in.
+            <span className="text-watch font-medium">$— placeholders</span> — we&rsquo;ll fill
+            these in.
           </p>
         </div>
 
@@ -409,7 +418,9 @@ function LandingPricing({ onComingSoon }: { onComingSoon: () => void }) {
 
               <div className="mb-5">
                 <h3
-                  className={`text-lg font-bold ${tier.highlighted ? "text-watch" : "text-ink"}`}
+                  className={`text-lg font-bold ${
+                    tier.highlighted ? "text-watch" : "text-ink"
+                  }`}
                 >
                   {tier.name}
                 </h3>
@@ -423,7 +434,11 @@ function LandingPricing({ onComingSoon }: { onComingSoon: () => void }) {
               <ul className="mb-6 flex-1 space-y-2.5">
                 {tier.features.map((f) => (
                   <li key={f} className="flex items-start gap-2 text-sm text-muted">
-                    <span className={`mt-0.5 shrink-0 font-bold ${tier.highlighted ? "text-watch" : "text-elite"}`}>
+                    <span
+                      className={`mt-0.5 shrink-0 font-bold ${
+                        tier.highlighted ? "text-watch" : "text-elite"
+                      }`}
+                    >
                       ✓
                     </span>
                     {f}
@@ -470,22 +485,18 @@ function LandingFooter() {
 
         <div className="space-y-2 text-xs text-muted/70 leading-relaxed">
           <p>
-            <strong className="text-muted">19+ only.</strong> Sports betting
-            involves risk. Our models are unproven — all published results are
-            paper-trade simulations only. Never bet more than you can afford to
-            lose.
+            <strong className="text-muted">19+ only.</strong> Sports betting involves risk. Our
+            models are unproven — all published results are paper-trade simulations only. Never bet
+            more than you can afford to lose.
           </p>
           <p>
-            If you or someone you know has a gambling problem, call ConnexOntario
-            at{" "}
-            <span className="font-medium text-muted">1-866-531-2600</span> or
-            visit{" "}
+            If you or someone you know has a gambling problem, call ConnexOntario at{" "}
+            <span className="font-medium text-muted">1-866-531-2600</span> or visit{" "}
             <span className="font-medium text-muted">connexontario.ca</span>.
           </p>
           <p>
-            SharpEdge is an independent analytics project. Not affiliated with
-            MLB, MLS, any league, any sportsbook, or any governing body. No
-            financial advice is given or implied.
+            SharpEdge is an independent analytics project. Not affiliated with MLB, MLS, any league,
+            any sportsbook, or any governing body. No financial advice is given or implied.
           </p>
         </div>
       </div>
@@ -498,9 +509,11 @@ function LandingFooter() {
 export function LandingPage({
   featuredPick,
   isInternalPreview,
+  adminData,
 }: {
   featuredPick: FeaturedPick | null;
   isInternalPreview: boolean;
+  adminData: AdminPreviewData | null;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const openModal = useCallback(() => setModalOpen(true), []);
@@ -508,7 +521,7 @@ export function LandingPage({
 
   return (
     <div className="min-h-screen">
-      {isInternalPreview && <InternalBanner />}
+      {isInternalPreview && <InternalBanner adminMode={adminData !== null} />}
       <LandingNav onComingSoon={openModal} />
 
       <main>
@@ -520,6 +533,8 @@ export function LandingPage({
       </main>
 
       <LandingFooter />
+
+      {adminData && <LandingAdminPreview data={adminData} />}
 
       {modalOpen && <ComingSoonModal onClose={closeModal} />}
     </div>

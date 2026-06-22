@@ -11,16 +11,34 @@ export default function AppleIcon() {
           width: "100%",
           height: "100%",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          background: "#07111f",
-          color: "#00d4ff",
-          fontSize: 96,
-          fontWeight: 700,
-          fontFamily: "sans-serif",
+          background: "#ff5c6c",
         }}
       >
-        S
+        <span
+          style={{
+            color: "white",
+            fontSize: 80,
+            fontWeight: 800,
+            fontFamily: "sans-serif",
+            letterSpacing: "-4px",
+            lineHeight: 1,
+          }}
+        >
+          SE
+        </span>
+        <span
+          style={{
+            color: "rgba(255,255,255,0.65)",
+            fontSize: 26,
+            fontFamily: "sans-serif",
+            marginTop: 4,
+          }}
+        >
+          ⚾
+        </span>
       </div>
     ),
     size
