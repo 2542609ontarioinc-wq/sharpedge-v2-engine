@@ -410,6 +410,99 @@ function BetOfTheDayCard({
   );
 }
 
+// ─── Elite section ────────────────────────────────────────────────────────────
+
+function ElitePickCard({
+  pick,
+  liveState,
+}: {
+  pick: SubPick;
+  liveState?: Map<string, LiveScore>;
+}) {
+  const live = liveState?.get(pick.gameId);
+  const isLive = live?.isLive ?? false;
+  const oddsStr = fmtOdds(pick.oddsAmerican, pick.oddsDecimal);
+
+  return (
+    <div className="rounded-xl border border-violet-500/25 bg-bg-2/50 px-4 py-3">
+      {/* Matchup row */}
+      <div className="mb-2 flex items-center gap-1.5 flex-wrap">
+        <TeamLogo team={pick.awayTeam} size={16} />
+        <span className="text-xs font-semibold text-ink">{pick.awayTeam}</span>
+        <span className="text-muted text-[10px]">@</span>
+        <TeamLogo team={pick.homeTeam} size={16} />
+        <span className="text-xs font-semibold text-ink">{pick.homeTeam}</span>
+        {isLive && (
+          <span className="ml-0.5 flex items-center gap-1">
+            <span className="size-1.5 rounded-full bg-watch animate-pulse" />
+            <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
+          </span>
+        )}
+        <span className="ml-auto text-[10px] text-muted/60">{formatFirstPitch(pick.gameTime)}</span>
+      </div>
+
+      {/* Pick row */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-400/70">
+            {pick.marketLabel}
+          </p>
+          <p className="mt-0.5 text-sm font-bold text-ink">{pick.label}</p>
+          {pick.playerName && (
+            <p className="mt-0.5 text-[10px] text-muted/55">{pick.playerName}</p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-3 text-right">
+          {pick.edge !== null && (
+            <div>
+              <p className="text-[10px] text-muted/50">Edge</p>
+              <p className="text-xs font-bold text-elite">+{pick.edge.toFixed(1)}%</p>
+            </div>
+          )}
+          <div>
+            <p className="text-[10px] text-muted/50">Win%</p>
+            <p className="text-xs font-bold text-violet-300">{pick.winProb.toFixed(1)}%</p>
+          </div>
+          {oddsStr && (
+            <div>
+              <p className="text-[10px] text-muted/50">Odds</p>
+              <p className="text-xs font-mono text-muted">{oddsStr}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EliteSection({
+  picks,
+  liveState,
+}: {
+  picks: SubPick[];
+  liveState?: Map<string, LiveScore>;
+}) {
+  if (picks.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-violet-500/30 bg-violet-500/5 p-4">
+      {/* Header — retains the existing Elite count label */}
+      <div className="mb-3 flex items-center gap-2">
+        <span className="inline-flex items-center rounded-full border border-violet-400/50 bg-violet-500/15 px-3 py-1 text-xs font-bold text-violet-300">
+          {picks.length} Elite play{picks.length !== 1 ? "s" : ""}
+        </span>
+        <span className="text-[10px] text-muted/50">meets BotD bar, not today&apos;s top pick</span>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {picks.map((pick) => (
+          <ElitePickCard key={pick.key} pick={pick} liveState={liveState} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Pick row ─────────────────────────────────────────────────────────────────
 function PickRow({ pick }: { pick: SubPick }) {
   const isBotD  = pick.tier === "Bet of the Day";
@@ -482,15 +575,26 @@ function PickRow({ pick }: { pick: SubPick }) {
 function GameCard({
   group,
   liveState,
+  lineupConfirmed,
 }: {
   group: GameGroup;
   liveState?: Map<string, LiveScore>;
+  lineupConfirmed: boolean;
 }) {
   const hasBotD  = group.picks.some((p) => p.tier === "Bet of the Day");
   const hasElite = !hasBotD && group.picks.some((p) => p.tier === "Elite");
   const live    = liveState?.get(group.gameId);
   const isLive  = live?.isLive ?? false;
-  const topPick = group.picks[0];
+
+  // Split picks: non-props always visible; props in collapsible section
+  const nonPropPicks = group.picks.filter((p) => p.source !== "prop");
+  const propPicks    = group.picks.filter((p) => p.source === "prop");
+  const hasPropPicks = propPicks.length > 0;
+
+  // Auto-expand when lineup is confirmed AND there are qualifying props to show
+  const [propsOpen, setPropsOpen] = useState(lineupConfirmed && hasPropPicks);
+
+  const topPick = nonPropPicks[0] ?? propPicks[0];
 
   const borderClass = hasBotD
     ? "border-watch/35"
@@ -500,6 +604,7 @@ function GameCard({
 
   return (
     <div className={`rounded-2xl border bg-surface p-4 backdrop-blur ${borderClass}`}>
+      {/* Game header */}
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -509,7 +614,7 @@ function GameCard({
             <TeamLogo team={group.homeTeam} size={18} />
             <span className="text-sm font-semibold text-ink">{group.homeTeam}</span>
           </div>
-          <div className="mt-0.5 flex items-center gap-2">
+          <div className="mt-0.5 flex items-center gap-2 flex-wrap">
             <p className="text-xs text-muted">{formatFirstPitch(group.gameTime)}</p>
             {isLive && (
               <span className="flex items-center gap-1">
@@ -517,17 +622,63 @@ function GameCard({
                 <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
               </span>
             )}
+            {/* Lineup status badge */}
+            {lineupConfirmed ? (
+              <span className="flex items-center gap-0.5 text-[10px] font-semibold text-elite">
+                <span>✓</span>
+                <span>Lineup confirmed</span>
+              </span>
+            ) : hasPropPicks ? (
+              <span className="text-[10px] text-muted/45">Lineup pending</span>
+            ) : null}
           </div>
         </div>
         <span className="shrink-0 rounded-full border border-border-strong/40 bg-bg-2 px-2.5 py-0.5 text-[10px] text-muted">
           {group.picks.length} play{group.picks.length !== 1 ? "s" : ""}
         </span>
       </div>
-      <div className="flex flex-col gap-2">
-        {group.picks.map((pick) => (
-          <PickRow key={pick.key} pick={pick} />
-        ))}
-      </div>
+
+      {/* Non-prop picks (always visible) */}
+      {nonPropPicks.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {nonPropPicks.map((pick) => (
+            <PickRow key={pick.key} pick={pick} />
+          ))}
+        </div>
+      )}
+
+      {/* Props collapsible section */}
+      {hasPropPicks && (
+        <div className={nonPropPicks.length > 0 ? "mt-2" : ""}>
+          <button
+            onClick={() => setPropsOpen((o) => !o)}
+            className="flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-left text-[11px] text-muted transition-colors hover:bg-white/5"
+          >
+            <span className="flex items-center gap-1.5">
+              <span>⚾ Player Props</span>
+              <span className="rounded-full border border-border-strong/40 bg-bg-2 px-1.5 py-0.5 text-[10px]">
+                {propPicks.length}
+              </span>
+              {lineupConfirmed ? (
+                <span className="text-[10px] font-semibold text-elite">✓ Lineup confirmed</span>
+              ) : (
+                <span className="text-[10px] text-muted/45">Lineup pending</span>
+              )}
+            </span>
+            <span className="shrink-0 text-muted/50">{propsOpen ? "▲" : "▼"}</span>
+          </button>
+
+          {propsOpen && (
+            <div className="mt-1.5 flex flex-col gap-2">
+              {propPicks.map((pick) => (
+                <PickRow key={pick.key} pick={pick} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Live score */}
       {live && topPick && (
         <LiveScoreModule
           live={live}
@@ -653,6 +804,14 @@ export function MLBSubscriberView({
 }) {
   const [dateFilter, setDateFilter] = useState("all");
 
+  // Lineup confirmation: a game's batting lineup is confirmed when it has batter props.
+  // Pitcher-only props do not count — batter props require lineup submission.
+  const lineupConfirmedGameIds = new Set(
+    playerProps
+      .filter((p) => p.playerType === "batter")
+      .map((p) => p.gameId)
+  );
+
   const rawPicks: SubPick[] = [
     ...filterSharpPicks(sharpPicks),
     ...filterSafeZone(safeZone),
@@ -671,8 +830,8 @@ export function MLBSubscriberView({
   // Promote exactly one BotD across the current date's visible picks
   const { picks: visiblePicks, botdKey } = promoteTiers(filteredRaw);
 
-  const botdPick = botdKey ? visiblePicks.find((p) => p.key === botdKey) ?? null : null;
-  const eliteCount = visiblePicks.filter((p) => p.tier === "Elite").length;
+  const botdPick  = botdKey ? visiblePicks.find((p) => p.key === botdKey) ?? null : null;
+  const elitePicks = visiblePicks.filter((p) => p.tier === "Elite");
 
   const groups = buildGroups(visiblePicks);
 
@@ -703,20 +862,11 @@ export function MLBSubscriberView({
 
       {/* ★ Bet of the Day — dedicated featured section */}
       {botdPick && (
-        <div>
-          <BetOfTheDayCard pick={botdPick} liveState={liveState} />
-        </div>
+        <BetOfTheDayCard pick={botdPick} liveState={liveState} />
       )}
 
-      {/* Elite count pill */}
-      {eliteCount > 0 && (
-        <div className="flex items-center gap-2">
-          <span className="rounded-full border border-violet-400/50 bg-violet-500/15 px-3 py-1 text-xs font-bold text-violet-300">
-            {eliteCount} Elite play{eliteCount !== 1 ? "s" : ""}
-          </span>
-          <span className="text-xs text-muted/50">meets BotD bar, not today's top pick</span>
-        </div>
-      )}
+      {/* Elite section — grouped featured section, below BotD, above game list */}
+      <EliteSection picks={elitePicks} liveState={liveState} />
 
       {/* Game list */}
       {groups.length === 0 ? (
@@ -731,7 +881,12 @@ export function MLBSubscriberView({
       ) : (
         <div className="flex flex-col gap-4">
           {groups.map((g) => (
-            <GameCard key={g.gameId} group={g} liveState={liveState} />
+            <GameCard
+              key={g.gameId}
+              group={g}
+              liveState={liveState}
+              lineupConfirmed={lineupConfirmedGameIds.has(g.gameId)}
+            />
           ))}
         </div>
       )}
