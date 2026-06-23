@@ -1,0 +1,208 @@
+SOCCER CORRECTNESS FIXES — APPLIED SUMMARY
+==========================================
+Commit: 48b60dc (main)
+Date:   2026-06-23
+Files:  web/src/lib/data.ts
+        src/models/grade_soccer_results.py
+        scripts/run_soccer_live_monitor.py
+        .github/workflows/soccer_daily_automation.yml
+
+Verified: npx tsc --noEmit EXIT 0 / npm run build EXIT 0
+
+
+FIX 1 (P3) — isRealValue EDGE CAP STRIPS VALID BADGES
+------------------------------------------------------
+Problem:
+  getSharpPicks() in data.ts computed:
+    const isRealValue = hasOdds && edge !== null && edge > 0 && edge <= 15;
+  The <=15 cap correctly flagged garbage edges but incorrectly stripped the
+  badge from engine-approved high-edge picks. Colombia vs Congo DR (WC group
+  stage, June 23) had model_edge=22.86% — engine published it as "Elite Value"
+  with final_allowed=true — but the frontend independently hid the edge badge.
+  Heavy-underdog WC picks routinely land in the 15–30% band where the engine's
+  expected-goal model sees a large gap but the market hasn't fully priced it.
+
+Root cause:
+  The 15% cap was carried over from league soccer where edges are smaller.
+  It does not match the engine's own sane-band ceiling (30%) in
+  apply_honest_calibration.py. The engine had already approved the pick; the
+  frontend was silently overriding that judgment.
+
+Fix (data.ts line ~163):
+  const isRealValue = hasOdds && edge !== null && edge > 0 && edge <= 30;
+
+  Edges above 30% remain hidden (suspect). Edges in 15–30% now show the badge
+  on any pick that has odds, a positive edge, and is in final_pro_soccer_picks
+  (which already requires final_allowed=true from the engine).
+
+Display before: Colombia vs Congo DR — no edge badge (invisible to users)
+Display after:  Colombia vs Congo DR — "+22.86% edge" badge visible
+
+
+FIX 2 (P9) — STALE PICK GUARD IN getSharpPicks()
+--------------------------------------------------
+Problem:
+  getSharpPicks() fetched all rows from final_pro_soccer_picks with no date
+  filter. The engine deletes-then-reinserts on each run, so picks are fresh
+  when the engine runs. But when the engine missed a day (June 22 — no
+  workflow trigger), the previous day's played picks persisted in the table
+  and were displayed to users (Argentina vs Austria, June 22, already played).
+
+  getSafeZone() already handles this correctly via a .gte("game_date", today)
+  filter on the games table join. getSharpPicks() had no equivalent guard.
+
+Fix (data.ts lines ~112–135):
+  Replaced the call to fetchGamesById(gameIds) (no date filter) with an inline
+  Supabase query that includes .gte("game_date", today), mirroring getSafeZone():
+
+    supabase.from("games")
+      .select("id, game_date, start_time_toronto, status")
+      .in("id", gameIds)
+      .gte("game_date", today)
+
+  Added .filter((pro) => gamesById.has(pro.game_id)) before the .map() so
+  picks whose game_id didn't survive the date filter are dropped entirely.
+
+  todayTorontoISODate() is used (already defined in data.ts) — same Toronto
+  timezone convention the engine uses for all game_date values.
+
+Behavior: on engine-skip days, yesterday's picks are hidden at the frontend
+level independently of whether the engine cleaned them up. The UI is now
+resilient to automation gaps.
+
+
+FIX 3 (P5) — SAFE ZONE ROI BUG (-50% SHOWN)
+--------------------------------------------
+Problem:
+  TrackRecordView displayed ROI for safe_balanced and safe_banker markets.
+  grade_soccer_results.py computed ROI as:
+    total_units = sum(float(p.get("units_result") or 0) for p in graded)
+    roi = round(total_units / len(graded) * 100, 2)
+
+  But safe zone picks in soccer_pick_grades_v2 have:
+    units_result = 0.0 for WIN
+    units_result = -1.0 for LOSS
+
+  This produces meaningless ROI. A 12W/6L safe_balanced record yields:
+    total_units = 0*12 + (-1)*6 = -6
+    roi = -6 / 18 * 100 = -33.33%
+
+  Safe zone picks are flat-stake categorical recommendations with no specific
+  odds at pick time (balanced/banker are match-outcome categories, not priced
+  bets). ROI is not a meaningful metric for them. Showing -33% to -50% makes
+  the product look like a massive loser when it's a calculation artifact.
+
+Fix (grade_soccer_results.py lines ~47–58):
+  For safe zone markets, set roi and stored_units to None before building the
+  summary row:
+
+    if market in _SAFE_ZONE_MARKETS:
+        roi = None
+        stored_units = None
+    else:
+        roi = round(total_units / len(graded) * 100, 2) if graded else None
+        stored_units = round(total_units, 2)
+
+  Win rate (W/L record) is still computed and stored — it's valid for safe zone.
+  TrackRecordView already renders "—" for null roiPercent values, so no frontend
+  change was needed.
+
+Display before: safe_balanced ROI = -50.0%  (misleading)
+Display after:  safe_balanced ROI = —        (honest N/A)
+
+
+FIX 4 (P6) — TRACK RECORD AGGREGATE STALENESS
+----------------------------------------------
+Problem:
+  The live monitor workflow (soccer_live_monitor.yml, runs every 10 min) calls
+  grade_soccer_picks, which writes per-pick grades to soccer_pick_grades_v2.
+  But it did NOT call grade_soccer_results, which reads from soccer_pick_grades_v2
+  and writes the per-market aggregate to soccer_pick_results.
+
+  soccer_pick_results is what TrackRecordView reads and displays. Because
+  grade_soccer_results only ran in the daily workflow, and the daily workflow
+  hadn't fired since June 21, the Track Record showed:
+    17 picks / 8W-9L / -15.41% ROI
+  when soccer_pick_grades_v2 actually had 42 graded picks through June 23.
+  The displayed track record was 25 picks behind reality.
+
+Fix (run_soccer_live_monitor.py line ~15):
+  Added grade_soccer_results to the end of the COMMANDS list:
+
+    "python -m src.models.grade_soccer_results",
+
+  grade_soccer_results internally calls grade_soccer_picks again (Step 1) before
+  computing aggregates (Step 2). The double grade_soccer_picks run is harmless —
+  all writes are upserts and the data is idempotent. The aggregate now refreshes
+  every 10-minute live-monitor cycle.
+
+  Cost: grade_soccer_results is cheap — it reads ~50 rows from soccer_pick_grades_v2
+  and writes 6 aggregate rows to soccer_pick_results.
+
+
+FIX 5 (P1) — RELIABLE AUTOMATION TRIGGER
+-----------------------------------------
+Problem:
+  soccer_daily_automation.yml had only two triggers:
+    - GitHub cron "0 10 * * *"
+    - workflow_dispatch (manual)
+
+  GitHub Actions cron is notoriously unreliable under queue load. The workflow
+  silently skipped June 22 and June 23 with no error, no alert, and no fallback.
+  Today's picks (Colombia/England) were only published because of a manual
+  codespace run at ~15:36 UTC — not because automation fired.
+
+  MLB avoids this with cron-job.org as the primary trigger (repository_dispatch)
+  and the GitHub cron as a backup. Soccer had no equivalent.
+
+Fix (soccer_daily_automation.yml):
+  Added repository_dispatch trigger with event type "daily-soccer-refresh":
+
+    on:
+      repository_dispatch:
+        types: [daily-soccer-refresh]
+      schedule:
+        - cron: "0 10 * * *"   # backup only
+      workflow_dispatch:
+
+  Instructions for completing P1 (cron-job.org setup):
+    URL:    https://api.github.com/repos/2542609ontarioinc-wq/sharpedge-v2-engine/dispatches
+    Method: POST
+    Auth:   Bearer <PAT with actions:write scope>
+    Body:   {"event_type": "daily-soccer-refresh"}
+    Schedule: daily at 10:00 UTC (or earlier to match desired Toronto time)
+
+  The GitHub cron is retained as a backup. If cron-job.org fires, the workflow
+  runs. If it misses, the GitHub cron provides a second attempt.
+
+
+WHAT WAS NOT CHANGED
+--------------------
+- MLB: untouched
+- Live scores: not implemented (P4 — separate large task)
+- Date selector: not added (P2 — UI parity, separate task)
+- SoccerGameGroupCard: not modified (P7 — frozen by design, separate task)
+- Soccer subscriber view: not built (P8 — large task)
+- soccer_pick_detail table: not created (P10 — large task)
+- TrackRecordView.tsx: not modified — null ROI already renders "—" correctly
+- MARKET_LABELS in TrackRecordView: safe_balanced/safe_banker show by raw name
+  (they appear in the "By market" table); that display detail left for P7/P8 pass
+
+
+DATA FLOW AFTER THESE FIXES
+----------------------------
+Live monitor (every 10 min):
+  grade_soccer_picks  → soccer_pick_grades_v2   (per-pick WIN/LOSS/VOID)
+  grade_soccer_results → soccer_pick_results    (NOW REFRESHED — 6-bucket aggregate)
+  build_soccer_clv_tracker → soccer_clv_tracking
+
+Daily workflow:
+  run_sharp_engine    → final_pro_soccer_picks  (cleaned to today+ on each run)
+  grade_soccer_results → soccer_pick_results    (also refreshed here)
+
+Frontend (revalidate=30):
+  getSharpPicks()   → final_pro_soccer_picks JOIN games WHERE game_date >= today
+                      edge badge shown for 0 < edge <= 30%
+  getSafeZone()     → soccer_safe_zone JOIN games WHERE game_date >= today (unchanged)
+  TrackRecordView   → soccer_pick_results (now current within 10 min)
+                      safe zone ROI shown as "—" (was -50% artifact)

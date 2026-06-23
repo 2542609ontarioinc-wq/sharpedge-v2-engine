@@ -1,0 +1,376 @@
+SOCCER vs MLB — COMPREHENSIVE PARITY AUDIT
+==========================================
+Date: 2026-06-23
+Pipeline status: Ran today manually at ~15:36 UTC (2 picks published: Colombia/Congo DR, England/Ghana)
+Workflow status: Last scheduled run June 21. June 22 and June 23 were manual codespace runs.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRIORITY-ORDERED FIX LIST (fixable gaps only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  P1  Automation — no external trigger; GitHub cron silently skips
+  P2  Date selector missing on soccer sharp picks tab
+  P3  isRealValue edge cap (15%) incorrectly hides valid high-edge WC picks
+  P4  Live scores — entirely absent; no table, no sync, no UI
+  P5  Safe zone ROI bug — -50% shown due to wrong units calculation
+  P6  Track record aggregate stale — live monitor grades but doesn't update summary
+  P7  SoccerGameGroupCard frozen/basic — no logos, no live widget, no premium styling
+  P8  No soccer subscriber view (Bet of Day / Elite / per-pick field set)
+  P9  Stale pick filter fragility — engine handles cleanup, frontend has no own guard
+  P10 No soccer pick_detail table (needed for per-pick diagnostics and CLV)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. AUTOMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MLB automation:
+  Primary trigger:  cron-job.org → POST to GitHub repository_dispatch ("hourly-mlb-refresh")
+  Backup trigger:   GitHub cron "0 8 * * *" (morning only)
+  Hourly refresh:   Additional batter-prop/live-state/CLV job, 14:00–03:00 UTC
+  Pip cache:        uses actions/cache@v4 on the hourly job
+
+Soccer automation:
+  Only trigger:     GitHub cron "0 10 * * *" (single daily job)
+  No external trigger, no repository_dispatch, no cron-job.org backup
+  No hourly refresh job
+  No pip cache
+
+GitHub Actions history for soccer_daily_automation.yml (complete — only 6 runs ever):
+  2026-06-21 12:31 UTC  ✅ success  schedule
+  2026-06-20 12:16 UTC  ✅ success  schedule
+  2026-06-19 16:19 UTC  ✅ success  schedule
+  2026-06-18 17:58 UTC  ✅ success  workflow_dispatch
+  2026-06-18 17:49 UTC  ❌ failure  schedule
+  2026-06-17 17:34 UTC  ❌ failure  schedule
+
+June 22 and June 23 scheduled runs did NOT fire. Today's data (15:36 UTC) came
+from a manual codespace run, not the workflow. The GitHub cron silently skipped
+two consecutive days with no error, no alert, no fallback.
+
+FIX: Add repository_dispatch trigger + cron-job.org external ping to
+soccer_daily_automation.yml, matching the MLB pattern exactly. Optionally add
+a soccer live-state hourly job (after live scores are implemented — see P4).
+File: .github/workflows/soccer_daily_automation.yml
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. FRONTEND DISPLAY — feature gap list
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Feature                     MLB                    Soccer
+─────────────────────────── ───────────────────    ─────────────────────────────
+Date selector               ✅ on sharp/safe/props ❌ missing entirely
+Team logos                  ✅ TeamLogo component  ❌ not used in SoccerGameGroupCard
+Live score widget           ✅ LiveScoreModule      ❌ not used (no live data)
+Live "Live" indicator       ✅ pulsing dot          ❌ absent
+Premium dark/gold cards     ✅ MLBSubscriberView    ❌ basic light-mode card
+Subscriber view tab         ✅ full tab + BotD     ❌ tab button exists but MLB only
+Bet of Day promotion        ✅ in subscriber view  ❌ not implemented for soccer
+Per-pick field set          ✅ 9-field PickFieldSet ❌ only market + badge + prob bar
+Track record                ✅ MLBTrackRecordView   ✅ TrackRecordView (older/simpler)
+Graded picks list           ✅ in MLBTrackRecordView ✅ in TrackRecordView (simpler)
+Diagnostics tab             ✅                     ❌ no soccer diagnostics
+Player props                ✅ full tab             ❌ no soccer props tab
+Model lab                   ✅ model comparison     ❌ no soccer model lab
+
+Most critical missing:
+  a) Date selector — sync_next_3_days_soccer fetches 3 days of games; the UI
+     can't browse them. Colombia vs Congo DR (kickoff 02:00 UTC June 24, which
+     is tonight in Toronto) is already published but a user on the "today" view
+     might not see it depending on timezone.
+     File: web/src/components/PicksView.tsx
+
+  b) SoccerGameGroupCard is frozen ("DO NOT modify" comment in GameGroupCard.tsx
+     line 44). It has no logos, no live data prop, no premium styling.
+     File: web/src/components/GameGroupCard.tsx
+
+  c) Subscriber view — soccer tab has no equivalent to MLBSubscriberView with
+     tiered picks (BotD / Elite / Strong) and per-pick data fields.
+     Files: web/src/components/PicksView.tsx (tab routing),
+            web/src/components/MLBSubscriberView.tsx (reference for pattern)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. isRealValue EDGE CAP BUG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+data.ts getSharpPicks() line ~148:
+  const isRealValue = hasOdds && edge !== null && edge > 0 && edge <= 15;
+
+Today's Colombia vs Congo DR pick:
+  model_edge = 22.86%  →  isRealValue = FALSE
+  The "edge" badge does NOT render on this pick.
+
+Today's England vs Ghana pick:
+  model_edge = 10.14%  →  isRealValue = TRUE  ✅
+
+The engine published the Colombia pick as "Elite Value" with final_allowed=true.
+The frontend's independent edge cap (≤15) overrides the engine's judgment and
+strips the value badge. WC picks against heavy underdogs routinely produce edges
+20-30% because the engine sees large expected-goal gaps. The cap was appropriate
+for league soccer where edges are smaller; it's too tight for the WC slate.
+
+The pick still SHOWS (isRealValue doesn't gate visibility), but the edge badge
+is missing, making it look like a no-edge pick.
+
+FIX: Raise cap to 30% (matching the engine's max edge band) OR replace the
+frontend's own edge cap with trust in the engine's final_allowed=true + the
+engine's own edge_flag check in apply_honest_calibration.py (-10 ≤ edge ≤ 15
+is the engine's sane-band). If the engine approved it, the frontend should show it.
+File: web/src/lib/data.ts line ~148
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. LIVE SCORES — ENTIRELY ABSENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MLB live score path:
+  sync_mlb_live_state.py → mlb_live_state table (score, inning, status, captured_at)
+  useLiveScores() hook → polls every 30s during live windows
+  MLBGameGroupCard → LiveScoreModule component
+  MLBSubscriberView → receives liveState prop
+
+Soccer live score path:
+  soccer_live_state table: DOES NOT EXIST
+  soccer_live_scores table: DOES NOT EXIST
+  No sync_soccer_live_state.py script
+  SoccerGameGroupCard: no liveState prop, no LiveScoreModule
+  soccer_live_monitor.yml exists and runs every 10 min but does:
+    sync_soccer_live_odds_snapshots, sync_soccer_live_lineups,
+    build_soccer_safety_engine_v3, build_soccer_elite_score,
+    build_soccer_promotion_events, grade_soccer_picks,
+    build_soccer_adaptive_weights, build_soccer_master_picks,
+    build_soccer_clv_tracker, build_soccer_analytics_feedback
+  None of these sync actual match scores.
+
+FIX (multi-step):
+  1. Add sync_soccer_live_scores.py using API-Football live endpoint
+     (APISPORTS_KEY already in the workflow — same key used for MLB)
+  2. Create soccer_live_state table (game_id, home_score, away_score,
+     game_status, minute, captured_at)
+  3. Add to soccer_live_monitor.yml step list
+  4. Add useSoccerLiveScores hook (same pattern as useLiveScores but for soccer)
+  5. Pass liveState to SoccerGameGroupCard and render LiveScoreModule
+  Files: new script, new table, soccer_live_monitor.yml,
+         web/src/hooks/ (new hook), web/src/components/GameGroupCard.tsx
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. SAFE ZONE ROI BUG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+soccer_pick_results currently shows:
+  safe_balanced: W=12, L=6, ROI=-50.0%  (12 graded rows: 6 WIN, 6 LOSS)
+  safe_banker:   W=4,  L=2, ROI=-33.33%
+
+Root cause:
+  grade_soccer_results.py line 47:
+    total_units = sum(float(p.get("units_result") or 0) for p in graded)
+    roi = round(total_units / len(graded) * 100, 2)
+
+  soccer_pick_grades_v2 has units_result=0.0 for WIN and units_result=-1.0
+  for LOSS on safe zone picks. Safe zone picks have no specific odds at pick
+  time (balanced/banker are categorical, not priced picks). Treating losses as
+  -1 unit and wins as 0 produces a grossly negative ROI that has no meaning.
+
+  The TrackRecordView displays these numbers to users. -50% ROI from a no-odds
+  safe zone product looks like a massive failure when it's just a calculation
+  artifact.
+
+FIX option A: Exclude ROI column from safe zone market rows in the track record
+  display (TrackRecordView.tsx — mark safe_balanced/safe_banker ROI as "N/A — no odds").
+FIX option B: Fix the units_result assignment in grade_soccer_results.py to
+  use a fixed 1.0 baseline for safe zone picks (match the safe zone's actual
+  intent — these are flat-stake recommendations, not edge-sized bets).
+Files: src/models/grade_soccer_results.py,
+       web/src/components/TrackRecordView.tsx
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. TRACK RECORD AGGREGATE STALENESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+soccer_pick_results last updated: 2026-06-21T12:47 UTC
+soccer_pick_grades_v2 most recent graded_at: 2026-06-23 (today)
+
+The live monitor (soccer_live_monitor.yml, runs every 10 min) calls:
+  grade_soccer_picks → writes to soccer_pick_grades_v2
+
+But it does NOT call grade_soccer_results.py which is what updates
+soccer_pick_results (the aggregate displayed in TrackRecordView).
+
+grade_soccer_results.py is ONLY called in the soccer_daily_automation.yml
+workflow as a separate step ("Grade results and update track record"). Since
+the workflow hasn't fired since June 21, the Track Record tab still shows
+17 picks total / 8-9 / -15.41% ROI even though 42 picks have been graded.
+
+FIX: Add grade_soccer_results to soccer_live_monitor.yml command list (or
+run it at the end of the daily workflow step). Cheap — it only reads from
+soccer_pick_grades_v2 and writes 6 aggregate rows to soccer_pick_results.
+File: scripts/run_soccer_live_monitor.py (or soccer_daily_automation.yml)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. SoccerGameGroupCard — FROZEN / BASIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GameGroupCard.tsx line 44: // DO NOT modify SoccerGameGroupCard or SoccerPickRow
+
+The comment is intentional — presumably frozen while a redesign was planned.
+Current state vs MLBGameGroupCard:
+
+  SoccerGameGroupCard (lines 46–134):
+    - Plain surface card, light mode border, no logos
+    - Collapsed by default (accordion), expands on click
+    - Shows: home vs away text, kickoff time, pick count, tier badge
+    - Expanded: SoccerPickRow per market (market badge, tier badge, edge badge
+      only if isRealValue, pick label, bookmaker, probability bar)
+    - No live prop, no LiveScoreModule, no team logos
+
+  MLBGameGroupCard (lines 135–275):
+    - TeamLogo for home and away
+    - Live pulsing dot when isLive
+    - LiveScoreModule (inning, score, outs)
+    - Game time formatting with live time override
+    - Premium styling inherited from MLBSubscriberView (VerdictGameCard pattern)
+
+FIX: Unfreeze and update SoccerGameGroupCard to add team logos and (once P4 is
+done) live score widget. Premium styling can follow after subscriber view is built.
+File: web/src/components/GameGroupCard.tsx
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. NO SOCCER SUBSCRIBER VIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PicksView.tsx tab === "subscriber" renders <MLBSubscriberView> regardless of
+which sport is selected. There is no soccer equivalent.
+
+MLBSubscriberView provides:
+  - Bet of Day hero card (dark/gold, premium styling)
+  - Elite / Strong tier sections per game group
+  - Per-pick 9-field PickFieldSet (model prob, book implied, edge, grade, odds, CLV)
+  - Building-field gating (hit rate / ROI / comparables when n<30)
+  - Power Score ranking
+  - Subscriber track record panel (with clv_beat_rate, gated CLV)
+  - Date filter for multi-day browsing
+  - Lineup confirmation badge, postponed detection, live scores integration
+
+Soccer subscriber view would need:
+  - final_pro_soccer_picks as the data source (already has final_tier, confidence_tier)
+  - soccer_safe_zone for safe zone section
+  - Graded picks for track record (soccer_pick_grades_v2 already has 42 rows)
+  - CLV: build_soccer_clv_tracker.py already runs in the live monitor — check if
+    mlb_clv_tracking equivalent exists for soccer
+
+This is the largest feature gap. Not a bug — it's planned work.
+File: would require new SoccerSubscriberView component + PicksView.tsx routing
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. STALE PICK FILTER FRAGILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+getSharpPicks() in data.ts fetches ALL rows from final_pro_soccer_picks with
+no date filter of its own.
+
+The engine DOES handle this:
+  build_final_pro_soccer_picks.py line 162:
+    supabase.table("final_pro_soccer_picks").delete().neq(...)
+  (deletes all current rows, then re-inserts only games with date >= toronto today)
+
+So picks are cleaned on every engine run. This is fine when the engine runs daily.
+But when the engine misses a day (as on June 22 — before the manual run today),
+yesterday's picks persist in the table and the frontend shows them.
+
+The user saw "1 stale pick" (Argentina vs Austria, June 22) last night because
+the engine had not yet run for June 23.
+
+FIX: Add a game_date >= todayTorontoISODate() filter in getSharpPicks() as an
+independent guard (same pattern getSafeZone() already uses via the games join).
+This makes the UI resilient to engine-skip days without depending on cleanup.
+File: web/src/lib/data.ts, getSharpPicks() function
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. NO SOCCER PICK_DETAIL TABLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MLB has mlb_pick_detail: enriched per-pick rows written by build_mlb_pick_detail.py
+that include edge_flag, calibrated_conf, model_edge, CLV, beat_close,
+subscriber_qualified, bet_of_day, units_result — used by the Diagnostics tab,
+Subscriber track record (computeSegment), and CLV tracking.
+
+Soccer has no equivalent. Soccer grading lives in soccer_pick_grades_v2 (42 rows)
+with columns: market, pick, grade, units_result. No edge, no confidence, no CLV,
+no enrichment linking graded picks back to prediction data.
+
+This means:
+  - No soccer diagnostics tab is possible
+  - Soccer track record can't compute per-pick edge or confidence averages
+  - Soccer CLV (computed by build_soccer_clv_tracker.py) has nowhere to join
+    back to a canonical per-pick record
+
+This is prerequisite infrastructure for a soccer subscriber view with real stats.
+This is planned work, not a quick fix.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THINGS THAT ARE NOT BUGS (calendar / slate / expected)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"Odds games matched: 0" on June 21 run — FALSE ALARM.
+  match_odds_to_games.py only matches rows WHERE game_id IS NULL.
+  The 0 means all fresh odds rows had already been matched by a prior run
+  (or on re-run the same day). Today's picks have 94 odds rows with correct
+  game_ids. Matching is working fine.
+
+Weather skipped 706 rows — EXPECTED.
+  build_real_soccer_weather_features.py uses venue city coordinates.
+  Obscure leagues have no venue data → weather is skipped for those games.
+  This does not affect WC or major league picks which have venue data.
+
+Global priors applied to 0 matches — EXPECTED.
+  apply_soccer_global_priors.py only updates rows where home_style_label IS NULL.
+  By the time it runs, build_soccer_team_style_profiles has already populated
+  style_labels for all 35 active match rows. Zero updates = all already set.
+
+Profile fallbacks applied to 0 — same reason.
+
+soccer_match_features_pro table not found — NOT A BUG.
+  build_soccer_match_features_pro.py writes to soccer_match_features (adds pro
+  columns to existing rows). "Pro match features updated: 31" in the log is correct.
+  There is no separate table; the table name in the error above was a guess.
+
+Only 2 picks today — CALENDAR.
+  WC group stage + minor leagues on this date. The engine found 2 qualifying
+  picks out of 35 processed games. Expected for WC slate; lopsided games often
+  have high edges (like Colombia 22.86%) but limited high-confidence picks after
+  safety and matchup dampeners.
+
+Pick volume declining (22 picks on June 15 → 2 on June 23) — CALENDAR.
+  Early group stage had many first-time WC matchups → wider edges.
+  As the group stage settles and the engine gets fewer qualified predictions,
+  pick volume naturally declines. This is not a model regression.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY TABLE — FIXABLE GAPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  #   Gap                         Effort   File(s)
+  ─── ─────────────────────────── ──────── ───────────────────────────────────────
+  P1  No external automation       Small   soccer_daily_automation.yml
+  P2  No date selector             Small   PicksView.tsx
+  P3  isRealValue edge cap (≤15)   Small   data.ts line ~148
+  P4  No live scores               Large   new script + table + hook + component
+  P5  Safe zone ROI bug            Small   grade_soccer_results.py / TrackRecordView
+  P6  Track record stale           Small   run_soccer_live_monitor.py
+  P7  Frozen basic card            Medium  GameGroupCard.tsx (unfreeze + add logos)
+  P8  No soccer subscriber view    Large   new SoccerSubscriberView component
+  P9  Stale pick guard             Small   data.ts getSharpPicks()
+  P10 No soccer pick_detail        Large   new script + new DB table
+  ─── ─────────────────────────── ──────── ───────────────────────────────────────
+  Small = 1-2 hours, Medium = half day, Large = multi-session
