@@ -1,0 +1,132 @@
+PREMIUM VERDICT CARDS — BUILD SUMMARY
+======================================
+Commit: c2cdd8f (main)
+Files changed: web/src/components/MLBSubscriberView.tsx
+               web/src/components/LandingPage.tsx
+               web/src/app/layout.tsx
+
+
+DESIGN LANGUAGE
+---------------
+- Dark card bg:   #0d1320 (game cards) / #070a10 (BotD hero)
+- Gold border:    #caa024 (2px solid on BotD hero + landing free pick)
+- Gold accent:    #f3c64a (numbers, badges, grade chips)
+- Green edge:     #12f38b (existing --color-elite)
+- Muted text:     #8ea5c5 (existing --color-muted)
+- Grid texture:   linear-gradient rgba(202,160,36,0.025) at 24px × 24px
+                  (rgba 0.04 on hero cards for higher contrast)
+- Box shadow BotD: 0 0 40px rgba(202,160,36,0.12), 0 8px 32px rgba(0,0,0,0.6)
+- Fonts:          Barlow Condensed (pick labels, headings) via --font-condensed
+                  JetBrains Mono (all numbers/odds) via --font-mono-num
+                  Both registered as Next.js Google Font variables in layout.tsx
+
+Market panel border/bg colors:
+  moneyline     → red-500/50  / red-950/60
+  totals        → blue-400/50 / blue-950/60
+  run_line      → orange-400/50 / orange-950/60
+  safe_balanced → green-400/50 / green-950/60
+  safe_banker   → green-400/50 / green-950/60
+  prop          → amber-400/50 / amber-950/60
+
+
+PER-PICK FIELD SET (component: PickFieldSet)
+--------------------------------------------
+Every pick — game card panel AND BotD hero — renders all 9 fields:
+
+REAL fields (from actual model/data — never invented):
+  1. Model Probability   pick.winProb (calibratedConf/calibratedConfidence)
+  2. Book Implied Prob   computed via bookImplied(decimal, american)
+                         formula: 1/decimal*100 or american convention
+                         shows "no-odds" when both inputs are null
+  3. Edge                pick.edge (modelEdge from mlb_final_predictions)
+                         shown as "+X.X%" in green (#12f38b)
+  4. Grade               derived from edge via edgeGradeLabel():
+                           Elite  ≥ 10%
+                           Strong ≥  8%
+                           Play   ≥  5%
+                           Lean   ≥  3%
+  5. Odds                fmtOdds(american, decimal) — american preferred
+  6. CLV                 always "—" for today's ungraded picks (honest pending
+                         state; CLV is added post-grade, never fabricated)
+
+BUILDING fields (shown honestly until n ≥ 30 graded samples):
+  7. Hit Rate (Historical)  buildingValue(n, winRate%) → "Building (N/30)"
+                            until n ≥ 30; then shows real win% for that market
+  8. Comparables            always "Building — needs backtest data"
+                            (requires full backtest pipeline, not yet built)
+  9. Expected ROI           buildingValue(n, roi%) → "Building (N/30)"
+                            until n ≥ 30; then shows real ROI% for that market
+
+PickFieldSet props:
+  pick        SubPick
+  marketStats Map<string, MarketGradedStats>  (from computeMarketGradedStats)
+  hero        boolean  (true = 2-col grid + large numbers for BotD)
+
+
+BUILDING-FIELD GATING LOGIC
+----------------------------
+Type:
+  MarketGradedStats { n: number; winRate: number|null; roi: number|null }
+
+Function: computeMarketGradedStats(gradedPicks: MLBPickDetail[])
+  - Iterates gradedPicks (passed as prop to MLBSubscriberView)
+  - Filters with isQualified() — same gate as subscriber display filter:
+      edgeFlag === "REAL"
+      AND (game market → modelEdge ≥ 3% AND calibratedConf ≥ 65%)
+      OR  (safe market → market in {safe_balanced, safe_banker})
+  - Counts only grade === "WIN" | "LOSS" (voids excluded)
+  - Groups by market (moneyline / totals / run_line / prop / safe_*)
+  - winRate = wins/n * 100  — only populated when n ≥ 30, else null
+  - roi     = sum(roiPercent)/n — only populated when n ≥ 30, else null
+  - Returns Map<string, MarketGradedStats>
+
+Function: buildingValue(n, realValue)
+  if (realValue !== null && n >= 30) return realValue
+  else return `Building (${n}/30)`
+
+Threshold constant: MIN_SAMPLE = 30
+
+The map is computed once in MLBSubscriberView and passed down through
+VerdictHeroCard → VerdictPickPanel → VerdictEliteSection → VerdictGameCard
+so N ticks up automatically as gradedPicks accumulates real data.
+
+
+POWER SCORE WEIGHTS
+-------------------
+Constants (all in MLBSubscriberView.tsx):
+  PS_EDGE_W = 3.0   (edge is the dominant signal)
+  PS_PROB_W = 0.4   (win probability above 50% adds secondary weight)
+
+Formula:
+  powerScore = edge * 3.0 + max(0, winProb - 50) * 0.4
+
+Components intentionally EXCLUDED until data exists:
+  - CLV           (only available post-grade, not for today's picks)
+  - Historical ROI (building field, no real data yet)
+  - Line movement  (not tracked)
+
+BotD eligibility gate (must pass BOTH for BotD or Elite tier):
+  BOTD_EDGE = 5   (edge ≥ 5%)
+  BOTD_PROB = 70  (calibrated win prob ≥ 70%)
+
+Qualifying display gate (shown at all in subscriber view):
+  EDGE_MIN  = 3   (edge ≥ 3%)
+  PROB_MIN  = 65  (win prob ≥ 65%)
+
+BotD selection: among all BotD-eligible picks for non-postponed games,
+the one with the highest powerScore is promoted; all others are demoted
+to "Elite". Exactly one BotD per day.
+
+
+SCOPE NOTES
+-----------
+- Dark/gold styling is self-contained to MLBSubscriberView.tsx and
+  LandingPage.tsx (LandingFreePick only). The rest of the app is unchanged.
+- Soccer, Diagnostics, Model Lab, Track Record views: untouched.
+- GameGroupCard.tsx and MLBPlayerPropsCard.tsx: untouched (used in non-
+  subscriber MLB views; subscriber view has its own VerdictPickPanel).
+- All honesty banners, INTERNAL tags, paper-only disclaimers preserved
+  and restyled to dark/gold — none removed.
+- Props capped at MAX_PROPS_PER_GAME = 2 per game (unchanged).
+- Date filter, live score integration, lineup-confirmed badge,
+  postponed detection: all unchanged and working.

@@ -1,0 +1,80 @@
+Prop Display Diagnosis — MLB Subscriber View
+============================================
+Date: 2026-06-22
+
+VERDICT
+-------
+Props exist but the vast majority don't clear the 65% win-probability qualifying
+bar — correctly hidden. No display bug. Only 3 of 126 props qualify today, and
+those 3 should be appearing in the game cards.
+
+1. RAW PROPS
+------------
+126 props in mlb_player_props across 10 games today.
+3 of 13 today's MLB games have zero props (engine hasn't run / no odds yet):
+
+  MIL @ CIN  (c785bda5)  — 0 props
+  CLE @ CWS  (fc1d1a85)  — 0 props
+  BAL @ LAA  (5edaf6fa)  — 0 props
+  All other 10 games     — 1–27 props each
+
+Batter (h_r_rbi) props exist in all 10 games that have any props.
+5 of those 10 also have pitcher props (strikeouts, outs_recorded, hits_allowed,
+earned_runs).
+
+2. LINEUP STATE
+---------------
+All 10 games with props have batter props, so lineupConfirmedGameIds marks all
+10 as "Lineup confirmed." The 3 zero-prop games don't appear in the subscriber
+view at all (they also have no qualifying sharp/safe picks).
+
+3. QUALIFYING FILTER — main bottleneck
+---------------------------------------
+Subscriber filter (EDGE_MIN=3%, PROB_MIN=65%, no suspect/no-odds):
+
+  Rejected: edgeFlag = suspect          12
+  Rejected: modelEdge < 3%             73   ← dominant killer (58% of all props)
+  Rejected: winProb < 65%              38
+  QUALIFY                               3
+
+The dominant kill is edge < 3%. Most batter h_r_rbi props produce edges of
+0–2%. Secondary kill is winProb < 65% — many props have enough edge but the
+calibrated win probability lands in the 55–64% range.
+
+3 qualifying props today:
+
+  Jose Altuve    h_r_rbi Over 0.5  edge=7.2%  winProb=67.3%  HOU @ TOR
+  Isaac Paredes  h_r_rbi Over 0.5  edge=7.2%  winProb=67.1%  HOU @ TOR
+  Brooks Lee     h_r_rbi Over 0.5  edge=8.8%  winProb=65.1%  LAD @ MIN
+
+4. THE 2-PROP CAP
+-----------------
+Not a factor today. HOU@TOR has exactly 2 qualifying props (at the cap),
+LAD@MIN has 1. Nothing is hidden by the cap.
+
+5. DISPLAY PATH — no bug found
+-------------------------------
+  getMLBPlayerProps()  — queries mlb_player_props WHERE game_date >= today,
+                          gets 126 rows, joins games table for team names and
+                          gameTime, returns all 126 correctly.
+  page.tsx             — fetches at build time (revalidate=30s), passes array
+                          to PicksView -> MLBSubscriberView as playerProps.
+  filterProps()        — applies three-filter chain, yields 3 qualifying props.
+  buildGroups()        — places those 3 props into HOU@TOR and LAD@MIN cards.
+  Both games also have qualifying safe zone picks, so their game cards appear
+  in the subscriber view regardless of props.
+  propsOpen init       — lineupConfirmed=true AND hasPropPicks=true for both
+                          games, so the ⚾ Player Props section auto-expands.
+
+No display bug. The 3 qualifying props should be visible in the HOU@TOR and
+LAD@MIN game cards on the subscriber tab, auto-expanded.
+
+SUMMARY
+-------
+Most game cards show no props because 123 of 126 props are correctly below the
+qualifying bar. The 65% winProb floor and 3% edge floor are doing their job.
+
+If more props are desired, the levers are:
+  - Lower EDGE_MIN from 3% to ~2%    (would pass ~38 more props before prob filter)
+  - Lower PROB_MIN from 65% to ~60%  (would pass the 38 currently killed by prob)
+This is a threshold policy decision, not a bug.

@@ -1,0 +1,138 @@
+SUBSCRIBER TRACK RECORD — APPLIED FIXES SUMMARY
+=================================================
+Commit: a723d2c (main)
+Date:   2026-06-23
+Files:  web/src/lib/types.ts
+        web/src/components/MLBSubscriberView.tsx
+        web/src/lib/data.ts
+        scripts/run_mlb_engine.py
+        src/grading/build_mlb_pick_detail.py
+
+
+FIX 1 — CLV DISPLAY GATING (most important)
+--------------------------------------------
+Problem:
+  SegmentStats rendered seg.avgClv.toFixed(2)% with no sample count, so a
+  single-digit CLV sample averaging near zero displayed as "+0.00%" — identical
+  in appearance to a mature 40-pick "+0.00%" result. The near-zero value was
+  real (not a fabricated 0-default), but the missing context made it misleading.
+
+Root cause confirmed:
+  _num(None) in build_mlb_pick_detail.py returns None (not 0), so picks with
+  no CLV snapshot are correctly excluded. Near-zero average came from a tiny
+  real CLV sample in mlb_clv_tracking.
+
+Changes:
+  types.ts — Added clvSampleCount: number to MLBSubscriberSegment.
+             (Comment in deprecated rowToSegment() sets it to 0 since
+             mlb_subscriber_results has no clv_sample_count column.)
+
+  MLBSubscriberView.tsx — Added constant:
+    const MIN_CLV_SAMPLE = 10;
+
+  computeSegment() — Added to return object:
+    clvSampleCount: clvRows.length,
+
+  SegmentStats — Replaced bare avgClv.toFixed(2)% with:
+    if clvSampleCount >= 10 → "+X.XX% (n=X)"
+    if clvSampleCount < 10  → "— (n=X, building)"
+
+Display examples:
+  Before: "+0.00%" (no context; looks authoritative at any n)
+  After:  "— (n=3, building)"  when n < 10
+  After:  "+0.04% (n=12)"      when n >= 10
+
+
+FIX 2 — CLV BEAT RATE RENDERED IN SegmentStats
+-----------------------------------------------
+Problem:
+  computeSegment() already computed clvBeatRate correctly:
+    clvRows.filter((p) => p.beatClose).length / clvRows.length
+  But SegmentStats never rendered it — the metric was computed and dropped.
+  Beat rate is a more honest signal than avg CLV at low n because it is less
+  sensitive to outliers.
+
+Changes:
+  MLBSubscriberView.tsx — Added CLV Beat Rate StatCell to SegmentStats:
+    const beatRate = clvN >= MIN_CLV_SAMPLE && seg.clvBeatRate != null
+      ? `${(seg.clvBeatRate * 100).toFixed(0)}% (n=${clvN})`
+      : `— (n=${clvN}, building)`;
+    <StatCell label="CLV Beat Rate" value={beatRate} />
+
+  SegmentStats grid is now 7 cells (was 6).
+  Same MIN_CLV_SAMPLE gating applies to beat rate and avg CLV.
+
+Display examples:
+  "— (n=3, building)"  when CLV sample < 10
+  "58% (n=12)"         when CLV sample >= 10
+
+
+FIX 3 — DEAD mlb_subscriber_results PATH REMOVED
+-------------------------------------------------
+Problem:
+  build_mlb_subscriber_analytics.py (step 12 in run_mlb_engine.py) wrote
+  pre-aggregated track record rows to mlb_subscriber_results on every engine
+  run. But the frontend never read them — page.tsx does not call
+  getMLBSubscriberResults(), and track record is computed entirely client-side
+  from mlb_pick_detail via computeSegment(). Step 12 was wasted work and the
+  computed_at timestamp on mlb_subscriber_results was meaningless.
+
+Changes:
+  run_mlb_engine.py — Removed step 12 from COMMANDS list. Replaced with a
+    comment explaining why it was removed and how to restore it if
+    mlb_subscriber_results is ever wired up.
+
+  data.ts — Added @deprecated JSDoc to getMLBSubscriberResults():
+    "mlb_subscriber_results is never read by the frontend (computeSegment
+     runs client-side). Step 12 removed from run_mlb_engine.py. Delete this
+     if mlb_subscriber_results is never wired up."
+    Function kept (not deleted) to avoid any accidental import errors; the
+    @deprecated marker signals it is dead code awaiting removal.
+
+Note: rowToSegment() in data.ts was also patched to include clvSampleCount: 0
+so it satisfies the updated MLBSubscriberSegment type (clvSampleCount was added
+in FIX 1). This is a compile-only fix — the function is never called.
+
+
+FIX 4 — STEP-11 LOUD FAILURE
+------------------------------
+Problem:
+  build_mlb_pick_detail.py (step 11) printed "✅ MLB pick detail built: N rows"
+  but never asserted N > 0. If a Supabase upsert error caused 0 rows to be
+  written while grades existed, the step would appear to succeed and the engine
+  would continue silently, leaving mlb_pick_detail stale. The track record would
+  then freeze at the last successful run's numbers with no visible error.
+
+Changes:
+  build_mlb_pick_detail.py — Added import sys at the top.
+  Added after the success print:
+    if saved == 0 and len(grades) > 0:
+        sys.exit(
+            f"❌ step-11 failure: {len(grades)} graded picks exist but 0 rows "
+            "written to mlb_pick_detail — check upsert errors above"
+        )
+
+  sys.exit() with a string message causes run_mlb_engine.py's subprocess call
+  to return a non-zero exit code, which will log the step as failed and (if
+  run in CI or a supervised job) surface the error visibly.
+
+
+VERIFICATION
+------------
+npx tsc --noEmit : EXIT 0
+npm run build    : EXIT 0 (7/7 pages, 15s)
+
+
+DATA FLOW (corrected post-fix)
+-------------------------------
+run_mlb_engine.py daily run:
+  step 8:  grade_mlb_results         → mlb_pick_grades
+  step 10: build_mlb_clv             → mlb_clv_tracking
+  step 11: build_mlb_pick_detail     → mlb_pick_detail       ← UI reads this
+  (step 12 removed)
+
+Frontend (every 30s via revalidate=30):
+  page.tsx → getMLBDiagnostics() → SELECT * FROM mlb_pick_detail
+           → passes mlbDiagnostics.picks as gradedPicks to MLBSubscriberView
+           → computeSegment() runs client-side
+           → SegmentStats now shows gated CLV avg + CLV beat rate

@@ -1,0 +1,169 @@
+SUBSCRIBER TRACK RECORD — FRESHNESS DIAGNOSIS
+==============================================
+Date: 2026-06-23
+
+
+EXECUTIVE SUMMARY
+-----------------
+The track record is NOT stale in the caching sense. It reads live from
+mlb_pick_detail on every request. But it has four real problems:
+  A. mlb_subscriber_results is computed but never read (dead code)
+  B. Numbers only change when build_mlb_pick_detail.py runs successfully
+  C. CLV "+0.00%" / "-0.00%" display is not fabricated but is misleading
+     because the CLV sample count is hidden
+  D. clv_beat_rate is computed but never displayed
+
+
+FINDING A — mlb_subscriber_results IS DEAD CODE
+-------------------------------------------------
+build_mlb_subscriber_analytics.py (step 12 in run_mlb_engine.py) writes to
+mlb_subscriber_results with a computed_at timestamp. But page.tsx never calls
+getMLBSubscriberResults(). The function exists in web/src/lib/data.ts
+(lines 915–934) but is not imported or invoked anywhere.
+
+The frontend's track record is computed entirely client-side in
+MLBSubscriberView.tsx via computeSegment() and computeMarketGradedStats(),
+from rows passed as gradedPicks={mlbDiagnostics.picks} — which come from
+getMLBDiagnostics() reading mlb_pick_detail.
+
+Result: mlb_subscriber_results and its computed_at are completely ignored.
+build_mlb_subscriber_analytics runs, writes correct numbers, nobody reads them.
+
+Fix options (pick one):
+  Option 1: Wire getMLBSubscriberResults() into page.tsx and use its pre-computed
+            aggregates for the track record section instead of the client-side
+            computeSegment() path. Simpler render, computed_at becomes meaningful.
+  Option 2: Keep the current client-side computation and delete the
+            build_mlb_subscriber_analytics step from run_mlb_engine.py to stop
+            running dead code.
+
+
+FINDING B — STALENESS RISK: build_mlb_pick_detail.py
+------------------------------------------------------
+The actual data source is mlb_pick_detail, rebuilt by build_mlb_pick_detail.py
+(step 11 in run_mlb_engine.py). The pipeline is:
+
+  grade_mlb_results (step 8)
+    → build_mlb_clv (step 10)
+    → build_mlb_pick_detail (step 11)     ← THIS controls what the UI shows
+    → build_mlb_subscriber_analytics (step 12)  ← ignored by frontend
+
+If step 11 fails silently or is skipped, the track record freezes even though
+grades exist in mlb_pick_grades. The step prints a success line but run_mlb_engine.py
+does not hard-exit when a step fails — it logs the failure and continues.
+
+Why 32-8 showed same numbers two days:
+  Most likely: no new picks cleared isQualified() from yesterday's games.
+  isQualified() requires edgeFlag == "REAL" AND modelEdge >= 3% AND
+  calibratedConf >= 65%. Any game where these thresholds weren't met produces
+  no new subscriber-qualified row even if the game was graded.
+  Less likely but possible: step 11 ran but failed to upsert (row-level error
+  not surfaced by the success print).
+
+To verify: run manually and compare counts:
+  python -m src.grading.build_mlb_pick_detail
+  → output: "✅ MLB pick detail built: N rows"
+  → compare N to SELECT COUNT(*) FROM mlb_pick_grades
+  If N << pick_grades count, something is being skipped.
+
+Fix: Add explicit row-count assertion at end of build_mlb_pick_detail.py:
+  expected = len(grades)
+  if saved < expected * 0.9:
+      raise RuntimeError(f"Only {saved}/{expected} rows written — possible failure")
+
+
+FINDING C — CLV "+0.00%" / "-0.00%" IS NOT FABRICATED BUT IS MISLEADING
+-------------------------------------------------------------------------
+The near-zero CLV display is NOT a 0-default bug. Traced through:
+
+build_mlb_pick_detail.py lines 272–274:
+  clv_row    = clv_map.get((gid, market, pick_str))
+  clv        = _num(clv_row.get("clv") if clv_row else None)
+
+_num(None) returns None (not 0) — the function's default is d=None, and
+float(None) raises TypeError which triggers the return d path. So picks with
+no CLV row get clv = None and are correctly excluded from the average.
+
+computeSegment() in MLBSubscriberView.tsx:
+  const clvRows = graded.filter((p) => p.clv !== null);
+  avgClv: clvRows.length > 0 ? clvRows.reduce(...) / clvRows.length : null
+
+If clvRows is empty, avgClv is null and SegmentStats shows "(no data)".
+But the user sees "+0.00%" and "-0.00%", meaning clvRows is NOT empty —
+some picks DO have real CLV values from mlb_clv_tracking, and they average
+to approximately 0. This is a real (if tiny) result.
+
+Why it's misleading: SegmentStats shows avgClv.toFixed(2)% but never shows
+the CLV sample count. "+0.00% avg CLV" from 2 picks looks identical to
+"+0.00% avg CLV" from 40 picks. Given the model is young and CLV requires a
+closing snapshot from mlb_odds_snapshots (which requires snap_mlb_odds_closing
+to have run hourly before first pitch), the CLV sample is almost certainly
+single-digit.
+
+To confirm: check SELECT COUNT(*) FROM mlb_clv_tracking — if single digits
+(say < 10), the near-zero average is meaningless noise shown with false precision.
+
+Fix: In SegmentStats component, gate the CLV display:
+  if (clvRows.length < MIN_CLV_SAMPLE) show "— (n=X, building)"
+  else show the real average with sample count: "+0.02% (n=X)"
+  A reasonable MIN_CLV_SAMPLE could be 10 or 15.
+
+
+FINDING D — clv_beat_rate COMPUTED BUT NEVER DISPLAYED
+-------------------------------------------------------
+computeSegment() (MLBSubscriberView.tsx) computes clvBeatRate correctly:
+  clvBeatRate: clvRows.length > 0
+    ? clvRows.filter((p) => p.beatClose).length / clvRows.length
+    : null
+
+But SegmentStats renders only avgClv — clvBeatRate is never rendered.
+Beat rate ("X% of picks beat the closing line") is a more honest and less
+noise-sensitive CLV metric than the average, especially at low n.
+
+Fix: Add a "CLV Beat Rate" StatCell to SegmentStats alongside avg CLV.
+  const beatRate = seg.clvBeatRate != null
+    ? `${(seg.clvBeatRate * 100).toFixed(0)}% (n=${clvN})`
+    : "—";
+
+
+FINDING E — NEXT.JS CACHE (NOT A PROBLEM)
+------------------------------------------
+revalidate = 30 in web/src/app/page.tsx means ISR with a 30-second TTL.
+The page refetches from Supabase every 30 seconds. It is NOT build-time cached.
+Data staleness from the Next.js layer is at most 30 seconds. This is fine.
+
+
+DATA FLOW MAP (corrected)
+-------------------------
+run_mlb_engine.py daily run:
+  step 8:  grade_mlb_results         → mlb_pick_grades
+  step 10: build_mlb_clv             → mlb_clv_tracking
+  step 11: build_mlb_pick_detail     → mlb_pick_detail       ← UI reads this
+  step 12: build_mlb_subscriber_analytics → mlb_subscriber_results  ← UNUSED
+
+Frontend (every 30s):
+  page.tsx → getMLBDiagnostics() → SELECT * FROM mlb_pick_detail
+           → passes mlbDiagnostics.picks as gradedPicks to MLBSubscriberView
+           → computeSegment() + computeMarketGradedStats() run client-side
+           → SubscriberTrackRecord renders the result
+
+
+ACTIONABLE FIX LIST (priority order)
+--------------------------------------
+1. [HIGH] Fix CLV display — add sample count gating so near-zero averages at
+   tiny n don't show as "+0.00%". Gate: if clvRows.length < 10, show
+   "— (n=X, building)" instead of the numeric average.
+   File: web/src/components/MLBSubscriberView.tsx, SegmentStats component.
+
+2. [HIGH] Add clv_beat_rate to SegmentStats. It's already computed, just not
+   rendered. Most honest CLV signal at low n.
+   File: web/src/components/MLBSubscriberView.tsx, SegmentStats component.
+
+3. [MEDIUM] Decide on mlb_subscriber_results: either wire it up or remove it.
+   Current state wastes a DB write on every engine run.
+   Files: web/src/app/page.tsx, web/src/lib/data.ts,
+          scripts/run_mlb_engine.py (to remove step 12 if unused).
+
+4. [LOW] Add a row-count assertion to build_mlb_pick_detail.py so step 11
+   failures surface loudly rather than silently producing a stale table.
+   File: src/grading/build_mlb_pick_detail.py, end of main().

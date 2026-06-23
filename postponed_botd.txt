@@ -1,0 +1,56 @@
+Postponed-Game BotD/Elite Fallback — Implementation Summary
+============================================================
+Date: 2026-06-23
+File: web/src/components/MLBSubscriberView.tsx
+Commit: 5ee9730
+
+PROBLEM
+-------
+The Bet of the Day was chosen purely by highest edge × win_probability score.
+If that game was postponed, suspended, or cancelled, it remained the featured
+BotD even though the game wasn't happening.
+
+WHAT CHANGED
+------------
+1. Status detection
+   - Added POSTPONED_STATUS_SET = {"postponed","cancelled","canceled","suspended","post"}
+     — exact mirror of POSTPONED_STATUSES in grade_mlb_picks.py / grade_mlb_prop_picks.py.
+   - isPostponedStatus(gameStatus) lowercases the MLB Stats API detailedState string and
+     checks exact match, then falls back to first-word match for compound states like
+     "Postponed: Rain" or "Suspended: Darkness".
+
+2. BotD selection (promoteTiers)
+   - Candidates for the single Bet of the Day slot are now filtered to non-postponed games:
+       candidates = picks where tier === "Bet of the Day" AND gameId NOT in postponedGameIds
+   - The next-best eligible play by edge × win_probability is promoted instead.
+   - Postponed games that met the BotD threshold are demoted to "Elite" tier (same as any
+     other non-winner), then excluded from the Elite display section.
+
+3. Elite section
+   - elitePicks filtered to exclude picks whose gameId is in postponedGameIds.
+   - Neither BotD nor Elite featured sections will ever show a postponed game.
+
+4. Game card badge
+   - postponedGameIds is passed to each GameCard.
+   - Postponed cards show a red "POSTPONED" badge next to the game time.
+   - Live indicator is suppressed for postponed games.
+   - Card border changes to border-red-500/20 with opacity-70 to visually dim the card.
+   - hasBotD / hasElite border elevation is also suppressed so postponed cards don't
+     receive a gold or purple highlight border.
+
+DATA SOURCE
+-----------
+No new fields or API changes needed. The liveState: Map<string, LiveScore> already
+passed into MLBSubscriberView contains LiveScore.gameStatus, which useLiveScores
+populates from the MLB Stats API g.status.detailedState field (e.g. "Postponed",
+"Suspended"). Status is only available after the first liveState poll completes;
+at initial render the badge won't appear yet (acceptable — same as the Live indicator).
+
+WHAT WAS NOT CHANGED
+--------------------
+- No grading, model math, edge/probability calculations, or thresholds altered.
+- No changes to soccer, props generation, or any other sport.
+- Honesty banners, tiering logic, logos, headshots, live modules, lineup-confirmed
+  badges, and the track record panel are all untouched.
+- Picks from postponed games still appear in the main game list (with the badge);
+  they are only excluded from the featured BotD and Elite selection sections.
