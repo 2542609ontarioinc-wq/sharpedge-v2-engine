@@ -282,39 +282,76 @@ function LandingFreePick({ pick }: { pick: FeaturedPick | null }) {
         )}
 
         {pick ? (
-          <div className="rounded-2xl border-2 border-elite/40 bg-elite/5 p-6 shadow-lg shadow-elite/5">
+          <div
+            className="rounded-2xl p-6 shadow-2xl"
+            style={{
+              backgroundColor: '#070a10',
+              border: '2px solid #caa024',
+              backgroundImage: 'linear-gradient(rgba(202,160,36,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(202,160,36,0.04) 1px, transparent 1px)',
+              backgroundSize: '24px 24px',
+              boxShadow: '0 0 40px rgba(202,160,36,0.12), 0 8px 32px rgba(0,0,0,0.6)',
+            }}
+          >
+            {/* Free pick badge */}
+            <div className="mb-4">
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-extrabold uppercase tracking-widest"
+                style={{ border: '1px solid #caa024', backgroundColor: 'rgba(202,160,36,0.15)', color: '#f3c64a' }}
+              >
+                ★ Free Public Pick
+              </span>
+            </div>
+
             {/* Teams */}
-            <div className="mb-5 flex items-center gap-4">
+            <div className="mb-5 flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-2">
                 <TeamLogoOrInitial team={pick.awayTeam} size={40} />
-                <span className="text-sm font-medium text-ink">{pick.awayTeam}</span>
+                <span className="text-sm font-semibold" style={{ color: '#eef7ff' }}>{pick.awayTeam}</span>
               </div>
-              <span className="text-xs font-bold text-muted">@</span>
+              <span className="text-xs font-bold" style={{ color: 'rgba(142,165,197,0.5)' }}>@</span>
               <div className="flex items-center gap-2">
                 <TeamLogoOrInitial team={pick.homeTeam} size={40} />
-                <span className="text-sm font-medium text-ink">{pick.homeTeam}</span>
+                <span className="text-sm font-semibold" style={{ color: '#eef7ff' }}>{pick.homeTeam}</span>
               </div>
             </div>
 
-            {/* Pick */}
-            <div className="mb-4 rounded-xl border border-elite/20 bg-bg-2/60 px-5 py-4">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-elite">
+            {/* Pick verdict panel */}
+            <div
+              className="mb-5 rounded-xl border px-5 py-4"
+              style={{ borderColor: 'rgba(202,160,36,0.25)', backgroundColor: 'rgba(13,19,32,0.8)' }}
+            >
+              <div
+                className="mb-1 text-[10px] font-bold uppercase tracking-widest"
+                style={{ color: '#caa024' }}
+              >
                 {MARKET_LABELS[pick.market] ?? pick.market}
               </div>
-              <p className="text-2xl font-bold text-ink">{pick.pick}</p>
+              <p
+                className="mb-3 text-3xl font-extrabold leading-tight"
+                style={{ fontFamily: "var(--font-condensed, ui-sans-serif)", color: '#eef7ff' }}
+              >
+                {pick.pick}
+              </p>
               {pick.confidence !== null && (
-                <p className="mt-1 text-sm text-muted">
-                  Model confidence:{" "}
-                  <span className="font-semibold text-ink">{pick.confidence.toFixed(1)}%</span>
-                </p>
+                <div className="flex items-end gap-5">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide" style={{ color: 'rgba(142,165,197,0.55)' }}>Model Prob</p>
+                    <p
+                      className="text-xl font-bold"
+                      style={{ fontFamily: "var(--font-mono-num, ui-monospace)", color: '#f3c64a' }}
+                    >
+                      {pick.confidence.toFixed(1)}%
+                    </p>
+                  </div>
+                </div>
               )}
-              <p className="mt-1 text-xs text-muted">{formatGameTime(pick.gameTime)}</p>
+              <p className="mt-2 text-xs" style={{ color: 'rgba(142,165,197,0.6)' }}>{formatGameTime(pick.gameTime)}</p>
             </div>
 
             {/* Responsible gambling */}
-            <p className="text-xs text-muted/70 leading-relaxed">
+            <p className="text-xs leading-relaxed" style={{ color: 'rgba(142,165,197,0.65)' }}>
               Unproven model · paper only · 19+ · gamble responsibly · ConnexOntario{" "}
-              <span className="font-medium text-muted">1-866-531-2600</span>
+              <span className="font-medium" style={{ color: 'rgba(142,165,197,0.85)' }}>1-866-531-2600</span>
             </p>
           </div>
         ) : (
