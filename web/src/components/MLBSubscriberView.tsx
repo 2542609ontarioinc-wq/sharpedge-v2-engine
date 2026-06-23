@@ -15,6 +15,18 @@ const PROB_MIN  = 65;  // min win-probability % for all pick types
 const BOTD_EDGE = 5;   // BotD candidate bar: edge >= this
 const BOTD_PROB = 70;  // BotD candidate bar: win prob >= this
 
+// ─── Postponed/cancelled game detection ──────────────────────────────────────
+// Mirrors POSTPONED_STATUSES in grade_mlb_picks.py / grade_mlb_prop_picks.py.
+const POSTPONED_STATUS_SET = new Set(["postponed", "cancelled", "canceled", "suspended", "post"]);
+
+function isPostponedStatus(gameStatus: string): boolean {
+  const lower = gameStatus.toLowerCase().trim();
+  if (POSTPONED_STATUS_SET.has(lower)) return true;
+  // Handle compound MLB detailedState strings: "Postponed: Rain", "Suspended: Darkness"
+  const firstWord = lower.split(/[\s:]/)[0];
+  return POSTPONED_STATUS_SET.has(firstWord);
+}
+
 // Props cap per game (display only — does not affect qualifying logic)
 const MAX_PROPS_PER_GAME = 2;
 
@@ -113,11 +125,17 @@ function rawTier(edge: number | null, winProb: number): SubPickTier | null {
 
 /**
  * Across all visible picks, find the single best BotD by edge × winProb.
+ * Picks whose game is postponed/suspended/cancelled are excluded from BotD/Elite candidacy.
  * All other BotD candidates are demoted to "Elite".
  * Returns the promoted list and the winning key (null if no candidates).
  */
-function promoteTiers(picks: SubPick[]): { picks: SubPick[]; botdKey: string | null } {
-  const candidates = picks.filter((p) => p.tier === "Bet of the Day");
+function promoteTiers(
+  picks: SubPick[],
+  postponedGameIds?: Set<string>,
+): { picks: SubPick[]; botdKey: string | null } {
+  const candidates = picks.filter(
+    (p) => p.tier === "Bet of the Day" && !postponedGameIds?.has(p.gameId),
+  );
   if (candidates.length === 0) return { picks, botdKey: null };
 
   // Sort candidates: score DESC, then edge DESC, then winProb DESC
@@ -576,13 +594,16 @@ function GameCard({
   group,
   liveState,
   lineupConfirmed,
+  postponedGameIds,
 }: {
   group: GameGroup;
   liveState?: Map<string, LiveScore>;
   lineupConfirmed: boolean;
+  postponedGameIds?: Set<string>;
 }) {
-  const hasBotD  = group.picks.some((p) => p.tier === "Bet of the Day");
-  const hasElite = !hasBotD && group.picks.some((p) => p.tier === "Elite");
+  const isPostponed = postponedGameIds?.has(group.gameId) ?? false;
+  const hasBotD  = !isPostponed && group.picks.some((p) => p.tier === "Bet of the Day");
+  const hasElite = !isPostponed && !hasBotD && group.picks.some((p) => p.tier === "Elite");
   const live    = liveState?.get(group.gameId);
   const isLive  = live?.isLive ?? false;
 
@@ -596,7 +617,9 @@ function GameCard({
 
   const topPick = nonPropPicks[0] ?? propPicks[0];
 
-  const borderClass = hasBotD
+  const borderClass = isPostponed
+    ? "border-red-500/20 opacity-70"
+    : hasBotD
     ? "border-watch/35"
     : hasElite
     ? "border-violet-400/30"
@@ -616,7 +639,12 @@ function GameCard({
           </div>
           <div className="mt-0.5 flex items-center gap-2 flex-wrap">
             <p className="text-xs text-muted">{formatFirstPitch(group.gameTime)}</p>
-            {isLive && (
+            {isPostponed && (
+              <span className="inline-flex items-center rounded border border-red-400/40 bg-red-400/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-400">
+                Postponed
+              </span>
+            )}
+            {!isPostponed && isLive && (
               <span className="flex items-center gap-1">
                 <span className="size-1.5 rounded-full bg-watch animate-pulse" />
                 <span className="text-[10px] font-bold text-watch uppercase tracking-wide">Live</span>
@@ -812,6 +840,14 @@ export function MLBSubscriberView({
       .map((p) => p.gameId)
   );
 
+  // Compute postponed game IDs from live state — mirrors the grader's POSTPONED_STATUSES set.
+  const postponedGameIds = new Set<string>();
+  if (liveState) {
+    for (const [gameId, live] of liveState) {
+      if (isPostponedStatus(live.gameStatus)) postponedGameIds.add(gameId);
+    }
+  }
+
   const rawPicks: SubPick[] = [
     ...filterSharpPicks(sharpPicks),
     ...filterSafeZone(safeZone),
@@ -827,11 +863,15 @@ export function MLBSubscriberView({
       ? rawPicks
       : rawPicks.filter((p) => gameDateToronto(p.gameTime) === dateFilter);
 
-  // Promote exactly one BotD across the current date's visible picks
-  const { picks: visiblePicks, botdKey } = promoteTiers(filteredRaw);
+  // Promote exactly one BotD across the current date's visible picks,
+  // skipping any picks whose game is postponed/suspended/cancelled.
+  const { picks: visiblePicks, botdKey } = promoteTiers(filteredRaw, postponedGameIds);
 
   const botdPick  = botdKey ? visiblePicks.find((p) => p.key === botdKey) ?? null : null;
-  const elitePicks = visiblePicks.filter((p) => p.tier === "Elite");
+  // Elite section also excludes postponed games.
+  const elitePicks = visiblePicks.filter(
+    (p) => p.tier === "Elite" && !postponedGameIds.has(p.gameId),
+  );
 
   const groups = buildGroups(visiblePicks);
 
@@ -886,6 +926,7 @@ export function MLBSubscriberView({
               group={g}
               liveState={liveState}
               lineupConfirmed={lineupConfirmedGameIds.has(g.gameId)}
+              postponedGameIds={postponedGameIds}
             />
           ))}
         </div>
