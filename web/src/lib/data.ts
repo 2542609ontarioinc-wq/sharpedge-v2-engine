@@ -110,17 +110,28 @@ export async function getSharpPicks(): Promise<SharpPick[]> {
   if (!proPicks || proPicks.length === 0) return [];
 
   const gameIds = [...new Set(proPicks.map((p) => p.game_id))];
+  const today = todayTorontoISODate();
 
-  const [{ data: predictions, error: predError }, gamesById] = await Promise.all([
+  // Filter games by date so engine-skip days don't leak yesterday's played picks.
+  // Mirrors getSafeZone()'s .gte("game_date", today) guard.
+  const [{ data: predictions, error: predError }, { data: gamesData, error: gamesError }] = await Promise.all([
     supabase
       .from("final_soccer_predictions")
       .select("game_id, market, best_pick, confidence, bookmaker, odds_decimal, model_edge")
       .in("game_id", gameIds)
       .order("created_at", { ascending: false }),
-    fetchGamesById(gameIds),
+    supabase
+      .from("games")
+      .select("id, game_date, start_time_toronto, status")
+      .in("id", gameIds)
+      .gte("game_date", today),
   ]);
 
   if (predError) throw predError;
+  if (gamesError) throw gamesError;
+
+  const gamesById = new Map<string, GameRow>();
+  for (const g of gamesData ?? []) gamesById.set(g.id, g as GameRow);
 
   const predsByGame = new Map<string, FinalSoccerPrediction[]>();
   for (const row of predictions ?? []) {
@@ -141,11 +152,15 @@ export async function getSharpPicks(): Promise<SharpPick[]> {
     return candidates[0];
   }
 
-  return (proPicks as FinalProSoccerPick[]).map((pro) => {
+  return (proPicks as FinalProSoccerPick[])
+    .filter((pro) => gamesById.has(pro.game_id)) // drop stale picks from engine-skip days
+    .map((pro) => {
     const match = matchPrediction(pro);
     const edge = match ? toNumber(match.model_edge) : null;
     const hasOdds = Boolean(match?.bookmaker && match?.odds_decimal != null && edge !== null);
-    const isRealValue = hasOdds && edge !== null && edge > 0 && edge <= 15;
+    // Cap at 30% — the engine's own sane-band ceiling. Picks above 30% are suspect;
+    // picks at 15-30% (e.g. heavy-underdog WC games) are engine-approved and should show the badge.
+    const isRealValue = hasOdds && edge !== null && edge > 0 && edge <= 30;
 
     const game = gamesById.get(pro.game_id);
 

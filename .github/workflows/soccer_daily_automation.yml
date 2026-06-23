@@ -1,9 +1,16 @@
 name: SharpEdge Soccer Daily Automation
 
 on:
+  # External trigger — set up cron-job.org to POST daily at 10:00 UTC:
+  #   URL: https://api.github.com/repos/OWNER/REPO/dispatches
+  #   Method: POST  Auth: Bearer <PAT with actions:write>
+  #   Body: {"event_type": "daily-soccer-refresh"}
+  repository_dispatch:
+    types: [daily-soccer-refresh]
   schedule:
     # 6:00 AM Toronto during daylight time = 10:00 AM UTC
     # (Shifted from 6 AM UTC which was consistently 6-10 hours late due to GitHub queue load)
+    # Kept as backup — cron-job.org is the primary trigger.
     - cron: "0 10 * * *"
   workflow_dispatch:
 

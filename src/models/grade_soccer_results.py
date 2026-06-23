@@ -46,7 +46,15 @@ def _compute_summary(rows: list[dict]) -> list[dict]:
         voids = sum(1 for p in picks if p.get("grade") == "VOID")
         total_units = sum(float(p.get("units_result") or 0) for p in graded)
         win_rate = round(wins / len(graded) * 100, 1) if graded else None
-        roi = round(total_units / len(graded) * 100, 2) if graded else None
+        # Safe zone picks have no priced odds (flat-stake categorical), so
+        # units_result=0/WIN and units_result=-1/LOSS produces meaningless ROI.
+        # Null out ROI and units for these markets; win rate is still valid.
+        if market in _SAFE_ZONE_MARKETS:
+            roi = None
+            stored_units = None
+        else:
+            roi = round(total_units / len(graded) * 100, 2) if graded else None
+            stored_units = round(total_units, 2)
 
         out.append(
             {
@@ -56,7 +64,7 @@ def _compute_summary(rows: list[dict]) -> list[dict]:
                 "losses": losses,
                 "voids": voids,
                 "win_rate": win_rate,
-                "total_units": round(total_units, 2),
+                "total_units": stored_units,
                 "roi_percent": roi,
                 "updated_at": now,
             }

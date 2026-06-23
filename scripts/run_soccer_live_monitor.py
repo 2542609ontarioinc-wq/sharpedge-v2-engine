@@ -13,6 +13,9 @@ COMMANDS = [
     "python -m src.models.build_soccer_master_picks",
     "python -m src.analytics.build_soccer_analytics_feedback",
     "python -m src.models.build_soccer_clv_tracker",
+    # Refresh the soccer_pick_results aggregate so TrackRecordView stays current.
+    # grade_soccer_results re-runs grade_soccer_picks internally (harmless upsert).
+    "python -m src.models.grade_soccer_results",
 ]
 
 def run(cmd):
