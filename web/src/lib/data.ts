@@ -907,11 +907,13 @@ function rowToSegment(r: SubscriberResultRow): MLBSubscriberSegment {
     roiPercent:  toNumber(r.roi_percent),
     avgEdge:     toNumber(r.avg_edge),
     avgWinProb:  toNumber(r.avg_win_prob),
-    avgClv:      toNumber(r.avg_clv),
-    clvBeatRate: toNumber(r.clv_beat_rate),
+    avgClv:         toNumber(r.avg_clv),
+    clvBeatRate:    toNumber(r.clv_beat_rate),
+    clvSampleCount: 0, // mlb_subscriber_results has no clv_sample_count column; field unused (deprecated path)
   };
 }
 
+/** @deprecated mlb_subscriber_results is never read by the frontend (computeSegment runs client-side). Step 12 removed from run_mlb_engine.py. Delete this if mlb_subscriber_results is never wired up. */
 export async function getMLBSubscriberResults(): Promise<MLBSubscriberResults> {
   const { data, error } = await supabase
     .from("mlb_subscriber_results")

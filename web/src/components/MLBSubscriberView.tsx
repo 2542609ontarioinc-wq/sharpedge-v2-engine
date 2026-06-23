@@ -15,7 +15,8 @@ const PROB_MIN  = 65;
 const BOTD_EDGE = 5;
 const BOTD_PROB = 70;
 const MAX_PROPS_PER_GAME = 2;
-const MIN_SAMPLE = 30; // building-field gate: N graded picks before showing real stats
+const MIN_SAMPLE = 30;     // building-field gate: N graded picks before showing real stats
+const MIN_CLV_SAMPLE = 10; // CLV display gate: hide noisy avg below this sample count
 
 // ─── Power Score ──────────────────────────────────────────────────────────────
 // Weights: edge dominant (×3.0), prob above 50% secondary (×0.4).
@@ -116,6 +117,7 @@ function computeSegment(rows: MLBPickDetail[]): MLBSubscriberSegment | null {
     avgWinProb: confRows.length > 0 ? confRows.reduce((s, p) => s + (p.calibratedConf ?? 0), 0) / confRows.length : null,
     avgClv: clvRows.length > 0 ? clvRows.reduce((s, p) => s + (p.clv ?? 0), 0) / clvRows.length : null,
     clvBeatRate: clvRows.length > 0 ? clvRows.filter((p) => p.beatClose).length / clvRows.length : null,
+    clvSampleCount: clvRows.length,
   };
 }
 
@@ -980,7 +982,13 @@ function SegmentStats({ label, seg }: { label: string; seg: MLBSubscriberSegment
   const roi = seg.roiPercent != null ? `${seg.roiPercent > 0 ? "+" : ""}${seg.roiPercent.toFixed(1)}%` : "—";
   const edge = seg.avgEdge   != null ? `+${seg.avgEdge.toFixed(1)}%` : "—";
   const prob = seg.avgWinProb != null ? `${seg.avgWinProb.toFixed(1)}%` : "—";
-  const clv  = seg.avgClv    != null ? `${seg.avgClv > 0 ? "+" : ""}${seg.avgClv.toFixed(2)}%` : "(no data)";
+  const clvN = seg.clvSampleCount;
+  const clv = clvN >= MIN_CLV_SAMPLE && seg.avgClv != null
+    ? `${seg.avgClv > 0 ? "+" : ""}${seg.avgClv.toFixed(2)}% (n=${clvN})`
+    : `— (n=${clvN}, building)`;
+  const beatRate = clvN >= MIN_CLV_SAMPLE && seg.clvBeatRate != null
+    ? `${(seg.clvBeatRate * 100).toFixed(0)}% (n=${clvN})`
+    : `— (n=${clvN}, building)`;
 
   return (
     <div className="flex-1 rounded-xl border border-[#caa024]/15 px-4 py-3" style={{ backgroundColor: 'rgba(13,19,32,0.8)' }}>
@@ -997,6 +1005,7 @@ function SegmentStats({ label, seg }: { label: string; seg: MLBSubscriberSegment
         <StatCell label="Avg Edge" value={edge} />
         <StatCell label="Avg Win%" value={prob} />
         <StatCell label="Avg CLV" value={clv} />
+        <StatCell label="CLV Beat Rate" value={beatRate} />
       </div>
     </div>
   );

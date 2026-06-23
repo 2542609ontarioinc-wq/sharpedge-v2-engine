@@ -245,6 +245,7 @@ export type MLBSubscriberSegment = {
   avgWinProb: number | null; // mean win-probability % at pick time
   avgClv: number | null;
   clvBeatRate: number | null; // fraction 0–1
+  clvSampleCount: number;    // picks with non-null CLV; gate display below MIN_CLV_SAMPLE
 };
 
 export type MLBSubscriberResults = {

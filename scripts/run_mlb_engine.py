@@ -71,8 +71,9 @@ COMMANDS = [
     "python -m src.grading.build_mlb_pick_detail",
     "python -m src.grading.build_mlb_prop_detail",
 
-    # 12. Subscriber track-record aggregates (reads subscriber_qualified rows from detail tables).
-    "python -m src.analytics.build_mlb_subscriber_analytics",
+    # (step 12 removed — build_mlb_subscriber_analytics writes mlb_subscriber_results
+    #  which is never read by the frontend; track record computed client-side from
+    #  mlb_pick_detail via computeSegment(). Re-add if mlb_subscriber_results is wired up.)
 ]
 
 

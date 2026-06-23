@@ -11,6 +11,7 @@ DIAGNOSTIC ONLY — does not touch any prediction or pick table.
 Run after grade_mlb_picks.
 """
 import re
+import sys
 from datetime import datetime, timezone
 
 from supabase import create_client
@@ -325,6 +326,12 @@ def main():
         saved += 1
 
     print(f"✅ MLB pick detail built: {saved} rows")
+
+    if saved == 0 and len(grades) > 0:
+        sys.exit(
+            f"❌ step-11 failure: {len(grades)} graded picks exist but 0 rows written "
+            "to mlb_pick_detail — check upsert errors above"
+        )
 
 
 if __name__ == "__main__":
